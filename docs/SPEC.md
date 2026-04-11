@@ -94,11 +94,11 @@ $ mm-coder attach bug-fix                       # 再次启动 Claude Code，自
     → 如果是被 IM 端接管导致退出，显示"会话已被 IM 端接管"
 
 IM 交互:
-  用户在 Mattermost 发消息
-    → IM Plugin 收到消息
+  用户在 Mattermost thread 中发消息
+    → IM Plugin 收到消息，根据 threadId 查找关联 session
     → Daemon 检查 session 状态
     → 如果 attached:
-       → 提示"会话正在终端使用中，是否接管？"
+       → 在 thread 中提示"会话正在终端使用中，是否接管？"
        → 用户选择接管 → Daemon 向终端 claude 进程发送 SIGTERM
        → Claude Code 优雅退出（session 状态自动保存）
        → session 变为 detached，继续处理 IM 消息
@@ -106,14 +106,27 @@ IM 交互:
     → 如果 detached:
        → 启动 claude -p "msg" --session-id <id> --output-format stream-json
        → 解析 stream-json 输出
-       → 发送格式化结果到 IM
+       → 发送格式化结果到对应 thread
        → 进程退出，session 保持 detached
 ```
 
-### 2.4 并发模型
+### 2.4 IM 消息路由
+
+```
+Channel 主消息流 → 管理命令（/create, /list, /open 等）
+  /create → 创建 session + 自动创建关联 thread
+  /list   → 列出所有 session 及其 thread permalink
+  /open   → 返回指定 session 的 thread 链接
+
+Thread（每个 session 一个） → 会话交互
+  threadId → SessionRegistry.getByIMThread() → 对应 session
+  消息直接路由到关联 session，无需前缀或切换命令
+```
+
+### 2.5 并发模型
 
 - 同一 session 的 IM 消息串行处理（队列），前一条处理完才处理下一条
-- 不同 session 之间完全并行
+- **不同 session 之间完全并行** — 多个 thread 可同时与各自的 session 交互
 - 终端和 IM 互斥：attach 时 IM 可选择接管（SIGTERM 终止终端进程）或排队等待
 
 ---
@@ -167,6 +180,7 @@ mm-coder create <name> [--workdir] [--cli]  注册新会话
 mm-coder attach <name>                      直接启动 AI CLI 交互
 mm-coder list                               列出所有会话
 mm-coder remove <name>                      删除会话
+mm-coder tui                                连接 daemon，实时监控面板
 mm-coder status                             daemon 和会话状态
 ```
 
@@ -186,6 +200,9 @@ interface IMPlugin {
 
   onMessage(handler: (msg: IncomingMessage) => void): void;
   sendMessage(target: MessageTarget, content: string): Promise<void>;
+
+  // 为新 session 创建独立 thread，返回 threadId
+  createThread(channelId: string, sessionName: string): Promise<string>;
 
   // 权限审批
   requestApproval(target: MessageTarget, req: ApprovalRequest): Promise<boolean>;
@@ -209,8 +226,11 @@ interface CLIPlugin {
   // 解析非交互模式输出
   parseOutput(raw: string): ParsedOutput;
 
-  // 权限拦截配置（可选）
-  permissionConfig?(): PermissionConfig;
+  // 权限拦截：注入权限审批机制（每个 CLI 用各自原生方案）
+  // Claude Code → PreToolUse Hook
+  // Codex CLI → Approval Mode API
+  // Gemini CLI → Policy Engine 规则注入
+  injectPermissionInterceptor(session: Session, config: PermissionConfig): void;
 }
 ```
 
@@ -256,13 +276,34 @@ plugins:
 
 ## 5. 权限审批
 
+### 设计原则
+
+权限拦截由 CLIPlugin 各自实现，使用每个 CLI 的原生机制，而不是统一抽象成 MCP Permission Server。
+
+| CLI | 原生机制 | 适用性 |
+|-----|---------|--------|
+| Claude Code | PreToolUse Hook（脚本，JSON stdin/stdout） | 最适合 Claude Code，直接拦截内建工具调用 |
+| Codex CLI | Approval Mode / 内置安全模式 | 应复用 Codex 自带审批能力 |
+| Gemini CLI | Policy Engine（声明式规则） | 应注入规则，而不是外围劫持 |
+
+**为什么不用 MCP Permission Server 做统一审批层：**
+- MCP 的职责是**提供工具**，不是**拦截 CLI 内建工具调用**
+- Claude Code 的 Bash / Write / Edit 等内建工具并不是由外部 MCP server 暴露的
+- 因此，MCP server 适合给模型增加能力，不适合作为 mm-coder 的统一权限拦截总线
+- 未来扩展到 Codex / Gemini 时，各自都有更原生的审批机制，强行统一到 MCP 只会增加适配成本
+
+**结论：**
+- Claude Code 场景：优先使用 PreToolUse Hook
+- 跨 CLI 扩展：统一上层审批状态机，底层由各 CLI plugin 接入自己的原生权限机制
+- MCP 仍可用于未来为模型提供额外工具，但不承担权限审批拦截职责
+
 ### 终端模式
 
 直接使用 AI CLI 原生审批（Claude Code 自带的终端权限确认），无需干预。
 
-### IM 模式
+### IM 模式（以 Claude Code 为例）
 
-通过 Claude Code 的 **PreToolUse Hook** 实现。Hook 是 Claude Code 在执行工具前调用的外部脚本，在 `-p` 非交互模式下同样生效。
+通过 **PreToolUse Hook** 实现。Hook 是 Claude Code 在执行工具前调用的外部脚本，在 `-p` 非交互模式下同样生效。
 
 **流程：**
 
@@ -281,26 +322,17 @@ claude -p 执行中，要调用 Write 工具
   → Claude Code 继续或中止
 ```
 
-**配置：**
+**配置（挂在 CLI 插件下，非全局）：**
 
 ```yaml
-permissions:
-  # 白名单：IM 模式下自动允许，不弹审批
-  autoAllow:
-    - Read
-    - Grep
-    - Glob
-    - WebSearch
-    - LSP
-
-  # 黑名单：IM 模式下直接拒绝
-  autoDeny:
-    - "Bash:rm -rf"
-    - "Bash:drop"
-    - "Bash:truncate"
-
-  # 未匹配的工具 → 走 IM 审批
-  timeout: 300  # 审批超时秒数，超时自动拒绝
+plugins:
+  cli:
+    - name: claude-code
+      package: "@mm-coder/plugin-claude-code"
+      permissions:
+        autoAllow: [Read, Grep, Glob, WebSearch, LSP]
+        autoDeny: ["Bash:rm -rf", "Bash:drop", "Bash:truncate"]
+        timeout: 300
 ```
 
 **实现要点：**
@@ -313,32 +345,55 @@ permissions:
 
 ## 6. IM 交互
 
+### 路由模型
+
+- **Channel 主消息流**：管理命令（/create, /list, /open）
+- **Thread（一对一）**：每个 session 绑定一个独立 thread，消息自动路由，无需切换命令
+- **并行交互**：不同 thread 可同时与各自 session 交互，互不干扰
+- **重新打开 Thread**：`/list` 显示所有 session 及 thread permalink，点击即可跳转；`/open <name>` 直接返回指定 session 的 thread 链接；若 thread 被删除，Bot 自动创建新 thread 并重新绑定
+
 ### Mattermost 示例
 
-每个 session 关联一个 thread：
-
 ```
-用户: !create bug-fix ~/myapp
-Bot:  ✅ 会话 'bug-fix' 已创建并关联到此线程
+# ===== Channel 主消息流（管理命令）=====
+
+用户: /create bug-fix ~/myapp
+Bot:  ✅ 已创建 'bug-fix'
+      → [点击进入 thread 开始交互]           ← Bot 自动创建 thread
+
+用户: /create review-pr ~/other
+Bot:  ✅ 已创建 'review-pr'
+      → [点击进入 thread 开始交互]
+
+用户: /list
+Bot:  ● bug-fix    (idle)      ~/myapp    → [打开 thread]
+      ● review-pr  (attached)  ~/other    → [打开 thread]  ← 终端使用中
+
+用户: /open bug-fix
+Bot:  → [打开 bug-fix thread]              ← 快速跳转到指定 session 的 thread
+
+
+# ===== Thread A: bug-fix（直接对话，无需前缀）=====
 
 用户: auth 模块的实现逻辑是什么？
-Bot:  [Claude Code 的回复，Markdown 格式化]
+Bot:  [Claude Code 回复，Markdown 格式化]
 
-用户: !list
-Bot:  ● bug-fix    (detached)  ~/myapp
-      ● review-pr  (attached)  ~/other     ← 终端使用中
-
-用户: !switch review-pr
-Bot:  ⚠️ 会话 'review-pr' 正在终端使用中
-      🔄 接管（终止终端会话）  ❌ 取消
-用户: 🔄
-Bot:  ✅ 已接管 'review-pr'，终端会话已终止
-
-[权限审批]
+用户: 把 JWT 改成 session-based
 Bot:  ⚠️ 权限请求: Write → src/auth.ts
       👍 允许  👎 拒绝
 用户: 👍
 Bot:  ✅ 已允许
+Bot:  [Claude Code 完成修改的回复]
+
+
+# ===== Thread B: review-pr（同时进行）=====
+
+用户: PR 的改动有什么风险？
+Bot:  ⚠️ 会话 'review-pr' 正在终端使用中
+      🔄 接管（终止终端会话）  ❌ 取消
+用户: 🔄
+Bot:  ✅ 已接管，终端会话已终止
+Bot:  [Claude Code 回复]
 ```
 
 ---
@@ -359,23 +414,62 @@ plugins:
   cli:
     - name: claude-code
       package: "@mm-coder/plugin-claude-code"
+      permissions:
+        autoAllow: [Read, Grep, Glob, WebSearch, LSP]
+        autoDeny: ["Bash:rm -rf", "Bash:drop", "Bash:truncate"]
+        timeout: 300
 
 defaults:
   cli: claude-code
   workdir: ~/projects
 
-permissions:
-  autoAllow: [Read, Grep, Glob, WebSearch, LSP]
-  autoDeny: ["Bash:rm -rf", "Bash:drop", "Bash:truncate"]
-  timeout: 300
-
 persistence:
   path: ~/.config/mm-coder/sessions.json
+
+ipc:
+  socketPath: ~/.config/mm-coder/daemon.sock
+
+ui:
+  defaultMode: headless  # headless | tui
 ```
 
 ---
 
-## 8. 项目结构
+## 8. 运行模式
+
+### Headless 模式（默认）
+
+`mm-coder start` 启动 daemon 后在后台运行，通过普通 CLI 命令和 IM 完成交互。
+
+**适用场景：**
+- 日常使用
+- 服务器 / 远程开发机
+- 主要依赖 IM 远程推进任务
+- 脚本化或开机自启
+
+### TUI 模式
+
+`mm-coder tui` 连接 daemon 的 IPC（Unix socket），显示实时状态面板。
+
+**功能：**
+- 查看所有 session 的状态（idle / attached / queue length / 最近活动时间）
+- 查看哪些 session 正在等待权限审批
+- 快速打开/attach/删除 session
+- 实时监控多会话运行情况
+
+**适用场景：**
+- 在电脑前同时推进多个 session，需要总览面板
+- 希望在单独终端 tab 中监控 daemon 状态
+- 需要快速发现哪个 session 被 IM 接管、哪个在排队
+
+**边界：**
+- TUI 不是 Claude Code 的交互界面
+- 真正进入某个 session 工作时，仍然执行 `mm-coder attach <name>`，直接进入原生 AI CLI
+- TUI 本质上是 daemon 的监控/控制台，而不是 REPL 宿主
+
+---
+
+## 9. 项目结构
 
 ```
 src/
@@ -400,7 +494,7 @@ src/
 
 ---
 
-## 9. 实现顺序
+## 10. 实现顺序
 
 ```
 Phase 1: 核心骨架

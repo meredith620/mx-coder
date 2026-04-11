@@ -58,11 +58,10 @@ Review 产出的待解决问题，按优先级排列。
 - [ ] API 限流错误的处理策略
 - [ ] daemon 崩溃后的恢复机制（session 持久化 + 自动重建状态）
 
-### 运行环境
+### 运行模式
 
-- [ ] 明确部署模型：daemon、终端、AI CLI 在同一台机器上
-- [ ] daemon 进程环境与用户终端环境差异（PATH、nvm 等）：session 创建时捕获环境变量快照
-- [ ] daemon 进程管理方案：PID 文件、多次 start 防护、保活策略
+- [ ] 补充 `mm-coder tui`：通过 IPC 连接 daemon，提供多 session 总览和审批状态监控
+- [ ] 明确 TUI 与 attach 的边界：TUI 仅做控制台，不承载 AI CLI 交互
 
 ### IPC
 
@@ -78,11 +77,11 @@ Review 产出的待解决问题，按优先级排列。
 
 ### 权限配置归属
 
-- [ ] permissions 配置从全局改为挂在 CLI 插件下（不同 CLI 的工具名不同）
+- [x] permissions 配置改为挂在 CLI 插件下（不同 CLI 的工具名不同）
 
 ### 命令一致性
 
-- [ ] 对齐 IM 命令和 CLI 命令（`!switch` 在 CLI 侧无对应；参数格式不一致）
+- [ ] 对齐 IM 命令和 CLI 命令的参数格式
 
 ### 可观测性
 
