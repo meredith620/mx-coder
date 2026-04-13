@@ -45,11 +45,24 @@ $ mm-coder attach bug-fix                       # 再次启动 Claude Code，自
 
 终端和 IM 使用不同的交互通道访问同一个 AI CLI 会话：
 
-- **终端**：直接运行 AI CLI 命令（如 `claude --session-id <id> --resume`），用户看到的就是原生 Claude Code，没有任何代理层
-- **IM**：Daemon 调用 AI CLI 的非交互模式（如 `claude -p "msg" --session-id <id> --output-format stream-json`），获取结构化输出后发送到 IM
+- **终端**：直接运行 AI CLI 命令（如 `claude --resume <id>`），用户看到的就是原生 Claude Code，没有任何代理层
+- **IM**：Daemon 为每个 session 维护一个**长驻**的 `claude -p --input-format stream-json --output-format stream-json` 进程，通过 stdin 写入消息、从 stdout 读取事件流；审批结果通过 `sendToolResult` 直接写回 stdin，无需 MCP server 中转
 - **互斥**：同一 session 同一时刻只有一端在操作。终端在用时 IM 提示"会话正在终端使用中"
 
-### 2.2 整体结构
+### 2.2 会话生命周期原则
+
+- `mm-coder create <name>` 创建的是**命名会话元数据**，并分配稳定的 `sessionId`
+- 首次 `attach` 或首次 IM 交互时，CLIPlugin 使用该 `sessionId` 初始化真实 AI CLI 会话
+- 后续终端与 IM 都基于同一个 `sessionId` 继续 `--resume`
+- `sessionId` 的分配由 CLIPlugin 决定；对 Claude Code，默认使用可持久化的 UUID
+- daemon 只编排会话状态，不直接持有交互式终端进程的控制面
+
+**IM 侧长驻进程管理规则：**
+
+- daemon 为每个 session 维护一个 `claude -p --input-format stream-json` 长驻进程（IM worker）
+- **懒启动**：daemon 启动时不主动重建 IM worker，等第一条 IM 消息到来时再 spawn（此时向 IM 发送"正在启动 Claude Code，请稍候"提示）
+- **attach 退出后立即 pre-warm**：`mm-coder attach` 退出后 session 在语义上"仍在工作"，daemon 立即 spawn 新的 IM worker，无需等待 IM 消息触发
+- **崩溃重启**：IM worker 非正常退出（exit code ≠ 0）时自动重启；最大重试次数可配置（默认 3 次），超出后 session 进入 `error` 状态并通知 IM 用户
 
 ```
                     ┌──────────────────────────────────────┐
@@ -88,9 +101,15 @@ $ mm-coder attach bug-fix                       # 再次启动 Claude Code，自
 终端 attach:
   mm-coder attach bug-fix
     → 通知 daemon 标记 session 为 attached，上报 claude 进程 PID
-    → 直接执行 claude --session-id <id> --resume（stdio: inherit）
+    → 若 session 处于 im_processing：
+       → attach 界面显示"Claude Code 正在处理 IM 消息，等待完成..."
+       → daemon 向 IM worker 发送 EOF/SIGTERM 信号前先等待当前消息完成
+    → daemon 停止 IM worker 进程（SIGTERM，等待优雅退出）
+    → 直接执行 claude --resume <id>（stdio: inherit）
     → 用户与 Claude Code 原生交互
-    → Claude Code 退出后，通知 daemon 标记 session 为 detached
+    → Claude Code 退出后，通知 daemon（exit reason: normal 或 taken_over）
+    → daemon 立即 pre-warm 新的 IM worker（spawn claude -p --input-format stream-json --resume <id>）
+    → session 变为 idle，等待 IM 消息投递
     → 如果是被 IM 端接管导致退出，显示"会话已被 IM 端接管"
 
 IM 交互:
@@ -99,15 +118,25 @@ IM 交互:
     → Daemon 检查 session 状态
     → 如果 attached:
        → 在 thread 中提示"会话正在终端使用中，是否接管？"
-       → 用户选择接管 → Daemon 向终端 claude 进程发送 SIGTERM
+       → 用户选择接管 → session 进入 takeover_pending
+       → Daemon 向终端 claude 进程发送 SIGTERM
        → Claude Code 优雅退出（session 状态自动保存）
-       → session 变为 detached，继续处理 IM 消息
+       → session 变为 idle，继续处理 IM 消息
        → 用户选择不接管 → 消息排队等待
-    → 如果 detached:
-       → 启动 claude -p "msg" --session-id <id> --output-format stream-json
-       → 解析 stream-json 输出
+    → 如果 idle（IM worker 已在后台常驻）:
+       → session 进入 im_processing
+       → 通过 IM worker 的 stdin.write 投递消息（JSON 格式）
+       → 从 IM worker stdout 流式读取 CLIEvent
+       → 若出现审批请求事件：
+          → session 进入 approval_pending
+          → daemon 向 IM 发送带 requestId 的审批请求
+          → 用户审批后，通过 sendToolResult 写回 stdin，session 回到 im_processing
        → 发送格式化结果到对应 thread
-       → 进程退出，session 保持 detached
+       → session 变回 idle，IM worker 保持存活等待下条消息
+    → 如果 idle（IM worker 尚未启动，首条消息触发懒启动）:
+       → 向 IM 回复"正在启动 Claude Code，请稍候..."
+       → spawn IM worker：claude -p --input-format stream-json --output-format stream-json --verbose --resume <id>
+       → 后续同 idle 流程
 ```
 
 ### 2.4 IM 消息路由
@@ -129,6 +158,13 @@ Thread（每个 session 一个） → 会话交互
 - **不同 session 之间完全并行** — 多个 thread 可同时与各自的 session 交互
 - 终端和 IM 互斥：attach 时 IM 可选择接管（SIGTERM 终止终端进程）或排队等待
 
+### 2.6 恢复原则
+
+- daemon 重启后采用**保守恢复**：优先恢复 session 元数据，不自动重放不确定操作
+- 无法确认的运行态进入 `recovering`，等待显式恢复或重新 attach
+- 未决审批默认 fail-closed，不在后台无限等待
+- `attached` / `im_processing` 等运行态恢复时必须结合 PID/进程存活校验纠偏
+
 ---
 
 ## 3. 核心模块
@@ -149,12 +185,25 @@ interface Session {
   sessionId: string;         // AI CLI 的 session ID（如 Claude Code 的 --session-id）
   cliPlugin: string;         // CLI 插件名
   workdir: string;
-  status: 'attached' | 'detached';
-  attachedPid: number | null; // 终端 claude 进程 PID（attached 时有值）
-  imBindings: IMBinding[];   // 关联的 IM 线程
-  messageQueue: string[];    // IM 待处理消息队列
+  status: 'idle' | 'attached' | 'im_processing' | 'approval_pending' | 'takeover_pending' | 'recovering' | 'error';
+  lastExitReason?: 'normal' | 'taken_over' | 'cli_crash' | 'recovered';
+  attachedPid: number | null;     // 终端 claude 进程 PID（attached 时有值）
+  imWorkerPid: number | null;     // IM 侧长驻 claude -p 进程 PID（常驻，idle/im_processing 时均有值）
+  imWorkerCrashCount: number;     // 连续崩溃计数，超出上限进入 error 状态
+  imBindings: IMBinding[];        // 关联的 IM 线程
+  messageQueue: QueuedMessage[];  // IM 待处理消息队列
   createdAt: Date;
   lastActivityAt: Date;
+}
+
+interface QueuedMessage {
+  messageId: string;
+  threadId: string;
+  userId: string;
+  content: string;
+  status: 'pending' | 'running' | 'waiting_approval' | 'completed' | 'failed';
+  correlationId: string;
+  approvalState?: 'pending' | 'approved' | 'denied' | 'expired' | 'cancelled';
 }
 
 class SessionRegistry {
@@ -163,7 +212,9 @@ class SessionRegistry {
   remove(name: string): void;
 
   markAttached(name: string, pid: number): void;
-  markDetached(name: string): void;
+  markDetached(name: string, reason?: Session['lastExitReason']): void;
+  markImProcessing(name: string, pid: number): void;
+  markRecovering(name: string): void;
   takeover(name: string): void;  // 向终端 claude 进程发 SIGTERM，强制释放 session
 
   bindIM(name: string, binding: IMBinding): void;
@@ -199,13 +250,14 @@ interface IMPlugin {
   stop(): Promise<void>;
 
   onMessage(handler: (msg: IncomingMessage) => void): void;
-  sendMessage(target: MessageTarget, content: string): Promise<void>;
+  sendMessage(target: MessageTarget, content: MessageContent): Promise<void>;
+  updateMessage(target: MessageTarget, messageId: string, content: MessageContent): Promise<void>;
 
   // 为新 session 创建独立 thread，返回 threadId
   createThread(channelId: string, sessionName: string): Promise<string>;
 
   // 权限审批
-  requestApproval(target: MessageTarget, req: ApprovalRequest): Promise<boolean>;
+  requestApproval(target: MessageTarget, req: ApprovalRequest): Promise<ApprovalResult>;
 }
 ```
 
@@ -214,20 +266,31 @@ interface IMPlugin {
 ### 4.2 CLI Plugin 接口
 
 ```typescript
+interface CLIEvent {
+  type: 'assistant_delta' | 'assistant_final' | 'tool_call' | 'approval_request' | 'status' | 'error';
+  payload: Record<string, unknown>;
+}
+
 interface CLIPlugin {
   name: string;
 
   // 终端模式：构建交互式启动命令
   buildAttachCommand(session: Session): { command: string; args: string[] };
 
-  // IM 模式：构建非交互式命令
-  buildMessageCommand(session: Session, message: string): { command: string; args: string[] };
+  // IM 模式：构建长驻 IM worker 启动命令
+  buildIMWorkerCommand(session: Session): { command: string; args: string[] };
 
-  // 解析非交互模式输出
-  parseOutput(raw: string): ParsedOutput;
+  // sessionId 的生成/初始化
+  generateSessionId(): string;
+
+  // 验证 session 是否可继续 resume
+  validateSession(sessionId: string): Promise<boolean>;
+
+  // 解析原生输出为 mm-coder 内部统一事件流
+  parseStream(stdout: NodeJS.ReadableStream): AsyncIterable<CLIEvent>;
 
   // 权限拦截：注入权限审批机制（每个 CLI 用各自原生方案）
-  // Claude Code → PreToolUse Hook
+  // Claude Code → 候选方案：permission-prompt-tool + MCP server / PreToolUse Hook
   // Codex CLI → Approval Mode API
   // Gemini CLI → Policy Engine 规则注入
   injectPermissionInterceptor(session: Session, config: PermissionConfig): void;
@@ -241,18 +304,21 @@ interface CLIPlugin {
 class ClaudeCodePlugin implements CLIPlugin {
   name = 'claude-code';
 
+  // 终端 attach：直接 spawn 交互式进程（stdio: inherit）
   buildAttachCommand(session: Session) {
     return {
       command: 'claude',
-      args: ['--session-id', session.sessionId, '--resume'],
+      args: ['--resume', session.sessionId],
     };
   }
 
-  buildMessageCommand(session: Session, message: string) {
+  // IM worker：长驻非交互进程，通过 stdin 持续投递消息
+  buildIMWorkerCommand(session: Session) {
     return {
       command: 'claude',
-      args: ['-p', message, '--session-id', session.sessionId,
-             '--output-format', 'stream-json', '--resume'],
+      args: ['-p', '--resume', session.sessionId,
+             '--input-format', 'stream-json',
+             '--output-format', 'stream-json', '--verbose'],
     };
   }
 }
@@ -278,24 +344,23 @@ plugins:
 
 ### 设计原则
 
-权限拦截由 CLIPlugin 各自实现，使用每个 CLI 的原生机制，而不是统一抽象成 MCP Permission Server。
+权限拦截由 CLIPlugin 各自实现，优先使用每个 CLI 的原生机制，而不是统一抽象成跨 CLI 的 MCP Permission Server。
 
 | CLI | 原生机制 | 适用性 |
 |-----|---------|--------|
-| Claude Code | PreToolUse Hook（脚本，JSON stdin/stdout） | 最适合 Claude Code，直接拦截内建工具调用 |
+| Claude Code | 候选：`--permission-prompt-tool` + MCP server / PreToolUse Hook | 两者都是 Claude Code 原生可行方案，需经 spike 定版 |
 | Codex CLI | Approval Mode / 内置安全模式 | 应复用 Codex 自带审批能力 |
 | Gemini CLI | Policy Engine（声明式规则） | 应注入规则，而不是外围劫持 |
 
-**为什么不用 MCP Permission Server 做统一审批层：**
-- MCP 的职责是**提供工具**，不是**拦截 CLI 内建工具调用**
-- Claude Code 的 Bash / Write / Edit 等内建工具并不是由外部 MCP server 暴露的
-- 因此，MCP server 适合给模型增加能力，不适合作为 mm-coder 的统一权限拦截总线
+**为什么不把 MCP Permission Server 设计成统一审批层：**
+- 对 Claude Code，MCP permission prompt tool 是**可行方案之一**，不是不可用
+- 但它依赖 Claude Code 特定能力，不应被抽象成跨 CLI 的统一协议
 - 未来扩展到 Codex / Gemini 时，各自都有更原生的审批机制，强行统一到 MCP 只会增加适配成本
 
 **结论：**
-- Claude Code 场景：优先使用 PreToolUse Hook
+- Claude Code 场景：`permission-prompt-tool + MCP server` 与 `PreToolUse Hook` 都作为候选方案
 - 跨 CLI 扩展：统一上层审批状态机，底层由各 CLI plugin 接入自己的原生权限机制
-- MCP 仍可用于未来为模型提供额外工具，但不承担权限审批拦截职责
+- MCP 可用于 Claude Code 的 permission prompt，也可用于未来为模型提供额外工具，但不承担跨 CLI 统一审批职责
 
 ### 终端模式
 
@@ -303,24 +368,37 @@ plugins:
 
 ### IM 模式（以 Claude Code 为例）
 
-通过 **PreToolUse Hook** 实现。Hook 是 Claude Code 在执行工具前调用的外部脚本，在 `-p` 非交互模式下同样生效。
+Claude Code 当前保留两条候选原生方案，最终由 spike 定版：
 
-**流程：**
+#### 方案 A：`--permission-prompt-tool` + MCP server
 
+```text
+claude -p 执行中，要调用 Write 工具
+  → Claude Code 调用 permission prompt tool
+  → mm-coder 的 MCP permission server 收到请求
+  → daemon / IMPlugin 在 thread 中发审批消息
+  → 用户批准或拒绝
+  → MCP server 返回 allow/deny 给 Claude Code
 ```
+
+#### 方案 B：PreToolUse Hook
+
+```text
 claude -p 执行中，要调用 Write 工具
   → 触发 PreToolUse hook
-  → hook 脚本读取 stdin 中的工具调用信息（工具名、参数等）
-  → 检查白名单：如果工具在 autoAllow 中 → 直接输出 {"decision":"allow"}
-  → 检查黑名单：如果匹配 autoDeny 规则 → 直接输出 {"decision":"deny"}
-  → 否则：通过 Unix socket 发请求到 daemon
-  → daemon 转发到 IM："⚠️ 权限请求: Write → src/auth.ts"
-  → hook 脚本阻塞等待...
-  → 用户在 IM 审批（👍 / 👎）
-  → daemon 返回结果给 hook 脚本
-  → hook 脚本输出 {"decision":"allow"} 或 {"decision":"deny"}
-  → Claude Code 继续或中止
+  → hook 读取工具调用信息
+  → 通过 Unix socket 请求 daemon
+  → daemon / IMPlugin 在 thread 中发审批消息
+  → 用户批准或拒绝
+  → hook 输出 allow/deny 给 Claude Code
 ```
+
+**当前设计决策：**
+- 两条路径都保留为 ClaudeCodePlugin 的候选实现
+- 最终选择取决于 spike：比较 `-p --resume` 稳定性、超时行为、实现复杂度与恢复语义
+- 对外暴露的上层审批状态机保持一致，不让 IM 侧感知底层差异
+- 审批状态统一为：`pending / approved / denied / expired / cancelled`
+- daemon 重启后未决审批默认 `expired`（fail-closed），由用户显式重试
 
 **配置（挂在 CLI 插件下，非全局）：**
 
@@ -330,6 +408,7 @@ plugins:
     - name: claude-code
       package: "@mm-coder/plugin-claude-code"
       permissions:
+        strategy: auto  # auto | mcp_prompt_tool | pre_tool_use_hook
         autoAllow: [Read, Grep, Glob, WebSearch, LSP]
         autoDeny: ["Bash:rm -rf", "Bash:drop", "Bash:truncate"]
         timeout: 300
@@ -337,13 +416,26 @@ plugins:
 
 **实现要点：**
 
-- mm-coder 启动 `claude -p` 时，自动注入 PreToolUse hook 配置
-- hook 脚本是一个轻量进程，通过 Unix socket 与 daemon 同步通信
-- daemon 维护 pending approval 状态，IM 用户审批后立即响应 hook
+- `strategy=auto` 表示由 ClaudeCodePlugin 根据验证结论或运行环境选择实现
+- `autoDeny` 仅作为 best-effort 防护，真正安全边界仍然是审批状态机
+- daemon 维护 pending approval 状态，IM 用户审批后立即响应底层实现（MCP tool 或 hook）
 
 ---
 
-## 6. IM 交互
+## 6. 安全与授权模型
+
+- 每个 session 维护独立的会话授权用户列表
+- 至少区分三类权限：
+  - 可发送会话消息
+  - 可审批工具执行
+  - 可接管终端会话
+- 审批请求应带稳定的 `requestId`，避免旧消息或旧 reaction 重放到新请求
+- 对高风险操作（审批、接管、删除 session）应写入审计日志
+- 本地 IPC（Unix socket）属于控制面入口，应限制文件权限，并校验对端身份
+
+---
+
+## 7. IM 交互
 
 ### 路由模型
 
@@ -398,7 +490,7 @@ Bot:  [Claude Code 回复]
 
 ---
 
-## 7. 配置
+## 8. 配置
 
 ```yaml
 # ~/.config/mm-coder/config.yaml
@@ -415,6 +507,7 @@ plugins:
     - name: claude-code
       package: "@mm-coder/plugin-claude-code"
       permissions:
+        strategy: auto  # auto | mcp_prompt_tool | pre_tool_use_hook
         autoAllow: [Read, Grep, Glob, WebSearch, LSP]
         autoDeny: ["Bash:rm -rf", "Bash:drop", "Bash:truncate"]
         timeout: 300
@@ -422,6 +515,15 @@ plugins:
 defaults:
   cli: claude-code
   workdir: ~/projects
+
+limits:
+  maxSessions: 8
+  sessionTimeoutMinutes: 60
+  permissionTimeoutSeconds: 300
+
+retention:
+  sessionMetadataDays: 7
+  auditLogDays: 30
 
 persistence:
   path: ~/.config/mm-coder/sessions.json
@@ -435,7 +537,7 @@ ui:
 
 ---
 
-## 8. 运行模式
+## 9. 运行模式
 
 ### Headless 模式（默认）
 
@@ -469,7 +571,7 @@ ui:
 
 ---
 
-## 9. 项目结构
+## 10. 项目结构
 
 ```
 src/
@@ -494,7 +596,7 @@ src/
 
 ---
 
-## 10. 实现顺序
+## 11. 实现顺序
 
 ```
 Phase 1: 核心骨架
@@ -522,6 +624,4 @@ Phase 4: 插件系统完善
 
 ## 待定
 
-- [ ] 会话持久化与 daemon 重启后的恢复策略
-- [ ] IM 消息队列的持久化（daemon 重启时不丢消息）
-- [ ] 测试策略
+详见 `docs/TODO.md`（单一待办来源，避免与 SPEC 重复维护）。
