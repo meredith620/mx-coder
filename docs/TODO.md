@@ -9,10 +9,23 @@ Review 产出的待解决问题，按优先级排列。
 在写代码前必须验证，任何一个不成立都需要调整方案。
 
 - [x] **`-p` 模式与交互模式 session 兼容性** — 已验证：`claude --resume <id>` 和 `claude -p --resume <id> --input-format stream-json --output-format stream-json --verbose` 交替使用共享同一会话上下文；`--input-format stream-json` 使进程长驻接受多条消息；审批通过 `sendToolResult` 直接写回 stdin，无需 MCP server 中转；`--permission-prompt-tool` 隐藏参数在 v2.1.100 中存在可用
-- [ ] **Claude Code 双审批方案对比** — 对比 `--permission-prompt-tool + MCP server` 与 `PreToolUse Hook`，验证二者在 `-p --resume` 场景下的稳定性、超时行为、实现复杂度和恢复语义
-- [ ] **长 session 的 context window 行为** — 验证 `-p --resume` 加载长历史 session 时，Claude Code 如何处理 context window 溢出（截断？摘要？报错？）
-- [ ] **SIGTERM 接管后的恢复性** — 验证 Claude Code 被终止时 session 是否可恢复，以及工具执行中断是否会导致不一致
-- [ ] **stream-json 事件结构稳定性** — 采集和验证增量输出、工具调用、错误、结束事件的结构与版本稳定性
+- [x] **Claude Code 双审批方案对比** — 对比 `--permission-prompt-tool + MCP server` 与 `PreToolUse Hook`，验证二者在 `-p --resume` 场景下的稳定性、超时行为、实现复杂度和恢复语义
+  - **结论**：仅采用 PermissionRequest（MCP）机制，PreToolUse 不引入
+  - 实测确认：PreToolUse 同步拦截无法等待 IM 异步响应；PermissionRequest 的 `sendRequest` 返回 Promise 支持 IM 用户审批
+  - daemon 充当 MCP server，IM worker 通过 `--permission-prompt-tool mm-coder-permission` 连接
+  - autoAllow/autoDeny 在 daemon MCP server 层实现，命中规则时同步返回
+- [x] **长 session 的 context window 行为** — 验证 `-p --resume` 加载长历史 session 时，Claude Code 如何处理 context window 溢出
+  - **结论**：Claude Code 内部自动管理 context，API inputTokens 稳定在 ~68k 不随 session 累积增长；历史被自动摘要压缩，200k 窗口从不被触发
+  - **实测**：session 累积到 ~186k tokens 时 inputTokens 仍为 68,538，cacheReadInputTokens 稳定在 ~118k；5 轮连续 resume 后 inputTokens 仅增至 68,863
+  - **设计含义**：mm-coder 无需实现任何 context window 管理逻辑；IM worker 长驻进程不会因 history 累积导致 API 调用失败
+- [x] **SIGTERM 接管后的恢复性** — SIGTERM 退出码 143，进程干净终止；Resume 后模型重新规划，不保留中断前 partial 状态知识；Write/Read 等工具中断后 resume 会重新验证并修复，无数据不一致；session 完整性可靠
+  - **设计含义**：daemon 向终端 Claude Code 发 SIGTERM 后可立即 pre-warm 新的 IM worker；模型接管后重新规划，可能重复执行部分操作（无数据损坏风险）
+- [x] **stream-json 事件结构稳定性** — 已采集 5 个不同测试的 jsonl，覆盖 7 种事件类型（system/assistant/user/result/attachment/last-prompt/queue-operation）
+  - **event type 清单**：`system`（init）、`assistant`（含 text/thinking/tool_use block）、`user`（含 tool_result block）、`result`（subtype: success/error）、`attachment`（v2 新增）、`last-prompt`（v2 新增）、`queue-operation`（v2 新增）
+  - **tool_use block 结构**：`{type, id, name, input: {...}}`，input 字段依工具而异
+  - **tool_result block 结构**：`{type, tool_use_id, content, is_error}`，content 为字符串
+  - **thinking block**：含 `thinking` 和 `signature` 字段（v2 新增）
+  - 版本稳定性：v2.0.76 新增了 attachment/last-prompt/queue-operation，parseStream 需兼容处理未知 type
 
 ## P1: 架构缺陷
 
@@ -86,7 +99,7 @@ Review 产出的待解决问题，按优先级排列。
 
 ### Hook / Prompt Tool 注入
 
-- [ ] 明确 Claude Code 审批策略选定后的注入方式与隔离方案（`permission-prompt-tool + MCP server` / `PreToolUse Hook`）
+- [x] 明确 Claude Code 审批策略选定后的注入方式与隔离方案：daemon MCP server，IM worker 通过 `--permission-prompt-tool mm-coder-permission` 连接，autoAllow/autoDeny 在 server 层实现
 
 ### 排队消息
 

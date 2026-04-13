@@ -63,6 +63,7 @@ $ mm-coder attach bug-fix                       # 再次启动 Claude Code，自
 - **懒启动**：daemon 启动时不主动重建 IM worker，等第一条 IM 消息到来时再 spawn（此时向 IM 发送"正在启动 Claude Code，请稍候"提示）
 - **attach 退出后立即 pre-warm**：`mm-coder attach` 退出后 session 在语义上"仍在工作"，daemon 立即 spawn 新的 IM worker，无需等待 IM 消息触发
 - **崩溃重启**：IM worker 非正常退出（exit code ≠ 0）时自动重启；最大重试次数可配置（默认 3 次），超出后 session 进入 `error` 状态并通知 IM 用户
+- **context window 自管理**：Claude Code 内部自动压缩/摘要历史，API inputTokens 稳定在 ~68k 不随 session 累积增长；mm-coder 无需实现任何 context window 管理逻辑，IM worker 可长驻数千轮对话
 
 ```
                     ┌──────────────────────────────────────┐
@@ -164,6 +165,7 @@ Thread（每个 session 一个） → 会话交互
 - 无法确认的运行态进入 `recovering`，等待显式恢复或重新 attach
 - 未决审批默认 fail-closed，不在后台无限等待
 - `attached` / `im_processing` 等运行态恢复时必须结合 PID/进程存活校验纠偏
+- **SIGTERM 接管**：daemon 向终端 Claude Code 发 SIGTERM 后进程干净退出（exit 143），session 完整可 resume；resume 后模型重新规划，不保留中断前 partial 状态知识，无数据损坏风险
 
 ---
 
@@ -267,7 +269,13 @@ interface IMPlugin {
 
 ```typescript
 interface CLIEvent {
-  type: 'assistant_delta' | 'assistant_final' | 'tool_call' | 'approval_request' | 'status' | 'error';
+  // 基于 stream-json 实测事件类型
+  type: 'system' | 'assistant' | 'user' | 'result' | 'attachment' | 'last-prompt' | 'queue-operation';
+  // system/init: session 初始化信息，含 session_id、tools、permissionMode 等
+  // assistant: 含 message.content（text/thinking/tool_use blocks）
+  // user: 含 message.content（tool_result blocks），tool_result.content 为字符串
+  // result: 含 subtype（success/error）、is_error、result 文本
+  // attachment/last-prompt/queue-operation: v2.0.76 新增，parseStream 需兼容未知 type
   payload: Record<string, unknown>;
 }
 
@@ -286,11 +294,9 @@ interface CLIPlugin {
   // 验证 session 是否可继续 resume
   validateSession(sessionId: string): Promise<boolean>;
 
-  // 解析原生输出为 mm-coder 内部统一事件流
   parseStream(stdout: NodeJS.ReadableStream): AsyncIterable<CLIEvent>;
 
-  // 权限拦截：注入权限审批机制（每个 CLI 用各自原生方案）
-  // Claude Code → 候选方案：permission-prompt-tool + MCP server / PreToolUse Hook
+  // 权限拦截：Claude Code 用 daemon MCP server 实现（见第 5 节）
   // Codex CLI → Approval Mode API
   // Gemini CLI → Policy Engine 规则注入
   injectPermissionInterceptor(session: Session, config: PermissionConfig): void;
@@ -348,19 +354,15 @@ plugins:
 
 | CLI | 原生机制 | 适用性 |
 |-----|---------|--------|
-| Claude Code | 候选：`--permission-prompt-tool` + MCP server / PreToolUse Hook | 两者都是 Claude Code 原生可行方案，需经 spike 定版 |
+| Claude Code | `--permission-prompt-tool` + daemon MCP server | 已定版：仅用 MCP 方案，PreToolUse 不引入 |
 | Codex CLI | Approval Mode / 内置安全模式 | 应复用 Codex 自带审批能力 |
 | Gemini CLI | Policy Engine（声明式规则） | 应注入规则，而不是外围劫持 |
 
-**为什么不把 MCP Permission Server 设计成统一审批层：**
-- 对 Claude Code，MCP permission prompt tool 是**可行方案之一**，不是不可用
-- 但它依赖 Claude Code 特定能力，不应被抽象成跨 CLI 的统一协议
-- 未来扩展到 Codex / Gemini 时，各自都有更原生的审批机制，强行统一到 MCP 只会增加适配成本
-
-**结论：**
-- Claude Code 场景：`permission-prompt-tool + MCP server` 与 `PreToolUse Hook` 都作为候选方案
-- 跨 CLI 扩展：统一上层审批状态机，底层由各 CLI plugin 接入自己的原生权限机制
-- MCP 可用于 Claude Code 的 permission prompt，也可用于未来为模型提供额外工具，但不承担跨 CLI 统一审批职责
+**为什么 MCP 不设计成跨 CLI 统一审批层：**
+- MCP 是 Claude Code 场景的**实现载体**，不是跨 CLI 的统一抽象
+- Codex / Gemini 各自有更原生的审批机制（Approval Mode / Policy Engine），不应被强制统一到 MCP
+- mm-coder 上层维护统一的审批状态机（`pending / approved / denied / expired / cancelled`），底层由各 CLI plugin 接入自己的原生机制
+- MCP 在 Claude Code 场景下同时承担 permission prompt 和未来扩展模型工具能力的职责
 
 ### 终端模式
 
@@ -368,37 +370,31 @@ plugins:
 
 ### IM 模式（以 Claude Code 为例）
 
-Claude Code 当前保留两条候选原生方案，最终由 spike 定版：
+Claude Code IM 审批已选定方案（Spike 定版）：
 
-#### 方案 A：`--permission-prompt-tool` + MCP server
+#### 选定方案：`--permission-prompt-tool` + daemon MCP server
 
 ```text
 claude -p 执行中，要调用 Write 工具
-  → Claude Code 调用 permission prompt tool
-  → mm-coder 的 MCP permission server 收到请求
-  → daemon / IMPlugin 在 thread 中发审批消息
+  → Claude Code 调用 permission prompt tool (mm-coder-permission)
+  → mm-coder daemon 的 MCP server 收到 can_use_tool 请求
+  → daemon 在 IM thread 中发审批消息
   → 用户批准或拒绝
   → MCP server 返回 allow/deny 给 Claude Code
+  → Claude Code 执行或拒绝工具
 ```
 
-#### 方案 B：PreToolUse Hook
+daemon MCP server 通过 Unix socket 与 IM worker 通信，实现本地审批路由，无需单独进程。
 
-```text
-claude -p 执行中，要调用 Write 工具
-  → 触发 PreToolUse hook
-  → hook 读取工具调用信息
-  → 通过 Unix socket 请求 daemon
-  → daemon / IMPlugin 在 thread 中发审批消息
-  → 用户批准或拒绝
-  → hook 输出 allow/deny 给 Claude Code
-```
-
-**当前设计决策：**
-- 两条路径都保留为 ClaudeCodePlugin 的候选实现
-- 最终选择取决于 spike：比较 `-p --resume` 稳定性、超时行为、实现复杂度与恢复语义
-- 对外暴露的上层审批状态机保持一致，不让 IM 侧感知底层差异
-- 审批状态统一为：`pending / approved / denied / expired / cancelled`
-- daemon 重启后未决审批默认 `expired`（fail-closed），由用户显式重试
+**结论（Spike 定版）：**
+- Claude Code IM 审批：**仅采用 PermissionRequest（MCP）机制**
+  - daemon 充当 MCP server，实现 `can_use_tool` tool
+  - IM worker 通过 `--permission-prompt-tool mm-coder-permission` 连接 daemon MCP server
+  - `sendRequest` 返回 Promise，天然支持 IM 用户异步审批
+  - autoAllow/autoDeny 在 daemon MCP server 层做规则匹配，命中则同步返回，无需打扰用户
+- Claude Code 终端模式：直接使用 Claude Code 原生权限确认，无需干预
+- Codex / Gemini：各自复用原生机制（Approval Mode / Policy Engine），不在 mm-coder 范围内统一抽象
+- **PreToolUse Hook 不引入**：它无法等待 IM 异步响应，且与 PermissionRequest 存在职责重叠，引入会增加状态机复杂度；如需在终端模式本地过滤危险命令，可在全局 Claude Code settings 中单独配置，不在 mm-coder 项目范围内
 
 **配置（挂在 CLI 插件下，非全局）：**
 
@@ -408,7 +404,8 @@ plugins:
     - name: claude-code
       package: "@mm-coder/plugin-claude-code"
       permissions:
-        strategy: auto  # auto | mcp_prompt_tool | pre_tool_use_hook
+        # MCP-based permission via daemon acting as MCP server
+        # IM worker connects via --permission-prompt-tool mm-coder-permission
         autoAllow: [Read, Grep, Glob, WebSearch, LSP]
         autoDeny: ["Bash:rm -rf", "Bash:drop", "Bash:truncate"]
         timeout: 300
@@ -416,9 +413,11 @@ plugins:
 
 **实现要点：**
 
-- `strategy=auto` 表示由 ClaudeCodePlugin 根据验证结论或运行环境选择实现
-- `autoDeny` 仅作为 best-effort 防护，真正安全边界仍然是审批状态机
-- daemon 维护 pending approval 状态，IM 用户审批后立即响应底层实现（MCP tool 或 hook）
+- `strategy` 配置仅保留 `mcp_prompt_tool`（实际固定为此值），删除 `auto` 和 `pre_tool_use_hook` 候选
+- `autoAllow` / `autoDeny` 在 daemon MCP server 层实现，命中规则时同步返回 allow/deny，不发送 IM 通知
+- daemon 维护 pending approval 状态机（`pending / approved / denied / expired / cancelled`）
+- IM 用户审批后，daemon 的 MCP server 立即通过 `sendRequest` 响应返回给 Claude Code
+- daemon 重启后未决审批默认 `expired`（fail-closed），由用户显式重试
 
 ---
 
@@ -507,7 +506,7 @@ plugins:
     - name: claude-code
       package: "@mm-coder/plugin-claude-code"
       permissions:
-        strategy: auto  # auto | mcp_prompt_tool | pre_tool_use_hook
+        # Always uses MCP-based permission via daemon acting as MCP server
         autoAllow: [Read, Grep, Glob, WebSearch, LSP]
         autoDeny: ["Bash:rm -rf", "Bash:drop", "Bash:truncate"]
         timeout: 300
