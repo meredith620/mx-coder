@@ -1,0 +1,91 @@
+# 熵防护规则: 强制原子提交
+# 防止混合不相关变更的提交
+
+name: enforce-atomic-commits
+severity: warning
+description: 提醒开发者遵循原子提交原则
+
+triggers:
+  pre_commit:
+    staged_files: true
+
+conditions:
+  # 检查 1: 变更文件数量预警
+  - type: file_count_threshold
+    threshold: 10
+    severity: info
+    message: |
+      本次提交包含 {{file_count}} 个文件的变更。
+
+      请确认这些变更是否属于同一逻辑单元：
+      - [ ] 是，所有变更服务于同一个目的
+      - [ ] 否，应该拆分为多个提交
+
+  # 检查 2: 跨领域变更检测
+  - type: file_pattern_mix
+    patterns:
+      - name: "harness"
+        regex: "^\\.harness/|^AGENTS\\.md|^harness\\.yaml"
+      - name: "source"
+        regex: "^src/"
+      - name: "tests"
+        regex: "^tests/"
+      - name: "docs"
+        regex: "^docs/"
+      - name: "config"
+        regex: "^config/|\\.yaml$|\\.json$"
+
+    severity_if_multiple: warning
+    message: |
+      ⚠️  检测到跨领域变更：
+      {{matched_patterns}}
+
+      原子提交建议：
+      - Harness 变更 → 单独提交
+      - 源代码变更 → 单独提交
+      - 测试代码变更 → 可与源代码同提交（如果是同功能）
+      - 文档变更 → 单独提交或与代码同提交（如果是文档该功能）
+
+  # 检查 3: 提交消息格式
+  - type: commit_message_scope
+    require_scope: true
+    valid_scopes:
+      - harness
+      - src
+      - tests
+      - docs
+      - build
+      - ci
+      - refactor
+      - fix
+      - feat
+      - perf
+
+    severity_if_invalid: warning
+    message: |
+      建议使用规范格式: `<type>(<scope>): <subject>`
+
+      示例:
+      - `feat(session): add SessionRegistry.create()`
+      - `test(worker): add IMWorkerManager spawn test`
+      - `docs(readme): add development guide`
+
+actions:
+  - type: interactive_checklist
+    prompt: |
+      原子提交检查清单:
+
+      1. [ ] 本次提交只做一件事吗？
+      2. [ ] 如果回滚此提交，不会意外丢失其他功能吗？
+      3. [ ] 提交消息能准确描述所有变更吗？
+      4. [ ] 这些变更可以独立审查吗？
+
+      全部勾选才能继续提交 (y/n):
+
+    abort_on: "n"
+
+exceptions:
+  - condition: "is_initial_commit"
+    skip: true
+  - condition: "only_generated_files_changed"
+    skip: true

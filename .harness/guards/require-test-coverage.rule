@@ -1,0 +1,39 @@
+# 熵防护规则: 强制测试覆盖
+# 确保关键代码变更包含对应测试
+
+name: require-test-coverage
+severity: warning
+description: 修改关键模块时必须包含对应测试更新
+
+triggers:
+  files:
+    - 'src/session-registry.ts'
+    - 'src/im-worker-manager.ts'
+    - 'src/approval-manager.ts'
+    - 'src/daemon.ts'
+    - 'src/plugins/**/*.ts'
+
+conditions:
+  - type: file_changed
+    pattern: 'src/(.*)\.ts'
+    require:
+      - 'tests/unit/${1}.test.ts'
+      - 'tests/integration/${1}.test.ts'
+    skip_if: 'tests/.*\.test\.ts'
+
+message: |
+  ⚠️ 检测到关键模块变更，但未检测到对应测试更新
+
+  请确认：
+  - [ ] 新增功能有对应单元测试（tests/unit/）
+  - [ ] 状态迁移场景有对应测试
+  - [ ] 错误场景有对应测试
+
+  运行测试确认：
+  npm run test:unit
+
+severity_rules:
+  - if: 'commit_count < 3'
+    severity: warning
+  - if: 'commit_count >= 3'
+    severity: error

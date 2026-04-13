@@ -1,0 +1,55 @@
+# 熵防护规则: 保护 Harness 文件不被意外修改
+# 防止非 Harness 相关的修改影响 Harness 架构文件
+
+name: protect-harness-files
+severity: warning
+description: 修改 Harness 架构文件需要特殊关注
+
+protected_files:
+  - AGENTS.md
+  - harness.yaml
+  - .harness/specs/*.md
+  - .harness/scripts/*.sh
+  - .harness/guards/*.rule
+
+triggers:
+  file_changed: protected_files
+
+conditions:
+  - type: commit_message
+    should_contain_one_of:
+      - "harness"
+      - "HARNESS"
+      - "spec"
+      - "constraint"
+      - "架构"
+    severity_if_missing: warning
+    message: "修改 Harness 文件但提交消息未提及 'harness' 或相关关键词"
+
+message: |
+  ⚠️ 检测到 Harness 架构文件被修改
+
+  请确认：
+  1. **修改意图**: 这是为了改进 Harness 本身，而非业务功能？
+  2. **影响评估**: 此变更会影响 Agent 的行为或项目约束吗？
+  3. **文档更新**: 是否需要更新 AGENTS.md？
+  4. **版本标记**: 是否需要更新 .harness/ 中的 version？
+
+  如果这是意外的（本应修改业务代码但选错了文件），请：
+  - 撤销此文件的修改: git checkout -- {{file}}
+  - 重新提交不包含 Harness 文件的变更
+
+  如果确实需要修改 Harness，请：
+  - 在提交消息中包含 "harness" 关键词
+  - 考虑创建 PR 而非直接提交以便 review
+
+actions:
+  - type: require_confirmation
+    prompt: "确认你理解这是在修改 Harness 架构文件 (yes/no): "
+    abort_if: "no"
+
+exceptions:
+  - condition: "only_header_fields_changed(['version', 'created'])"
+    severity: info
+  - condition: "lines_changed < 3 && only_typos"
+    severity: info

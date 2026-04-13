@@ -1,0 +1,49 @@
+# 熵防护规则: 防止分层架构约束被违反
+# 确保业务逻辑不泄露到表示层
+
+name: enforce-layer-separation
+severity: error
+description: 表示层（IPC Handler / CLI）不应包含业务逻辑
+
+patterns:
+  # IPC/CLI 层直接 spawn Claude Code 进程（应通过 CLIPlugin）
+  - type: regex
+    pattern: 'child_process\.spawn'
+    scope: typescript
+    file_pattern: 'src/index.ts'
+    file_pattern: 'src/ipc/.*\.ts'
+
+  # IPC/CLI 层直接操作 IM 插件（应通过 daemon 间接调用）
+  - type: regex
+    pattern: 'MattermostPlugin'
+    scope: typescript
+    file_pattern: 'src/index.ts'
+    file_pattern: 'src/ipc/.*\.ts'
+
+  # IMPlugin 层直接操作 SessionRegistry（应通过 daemon 间接）
+  - type: regex
+    pattern: 'SessionRegistry'
+    scope: typescript
+    file_pattern: 'src/plugins/im/.*\.ts'
+
+allowed:
+  # 允许的：通过 interface 调用
+  - pattern: 'imPlugin\.'        # IMPlugin 接口调用
+  - pattern: 'cliPlugin\.'       # CLIPlugin 接口调用
+  - pattern: 'registry\.'        # SessionRegistry 方法调用
+  - pattern: 'workerManager\.'  # IMWorkerManager 方法调用
+  - pattern: 'Json\(|parse\('    # JSON 序列化/反序列化（数据转换层允许）
+
+message: |
+  ⛔ 架构违规：业务逻辑出现在表示层
+
+  表示层应只负责：
+  - CLI 参数解析 / IPC 消息解析
+  - 调用应用层方法
+  - 结果序列化输出
+
+  业务逻辑应留在：
+  - SessionRegistry (Session 元数据 + 状态机)
+  - IMWorkerManager (Claude Code 进程生命周期)
+  - ApprovalManager (权限审批状态机)
+  - IM

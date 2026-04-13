@@ -1,0 +1,48 @@
+# 熵防护规则: 禁止直接修改配置
+# 防止绕过 claw-one API 直接修改 OpenClaw 配置
+
+name: no-direct-config-modification
+severity: error
+description: 禁止直接修改 ~/.openclaw/openclaw.json 而不经过 claw-one API
+
+patterns:
+  # 直接文件写入
+  - type: regex
+    pattern: 'echo.*>.*\.openclaw/openclaw\.json'
+  - type: regex
+    pattern: 'cat.*>.*\.openclaw/openclaw\.json'
+  - type: regex
+    pattern: 'tee.*\.openclaw/openclaw\.json'
+  
+  # 使用编辑器直接修改
+  - type: regex
+    pattern: '(nano|vim|vi|emacs).*\.openclaw/openclaw\.json'
+  
+  # 代码中的直接写入（应通过 ConfigManager）
+  - type: regex
+    pattern: 'fs::write.*openclaw\.json'
+    scope: rust
+  - type: regex
+    pattern: 'File::create.*openclaw\.json'
+    scope: rust
+
+message: |
+  ⛔ 禁止直接修改 OpenClaw 配置文件！
+  
+  请通过以下方式修改配置：
+  1. Web UI: http://localhost:8080
+  2. API: POST /api/config
+  3. CLI: claw-one config
+  
+  直接修改配置会导致：
+  - Git 快照不一致
+  - Safe Mode 检测失效
+  - 配置回滚失败
+
+exceptions:
+  # 允许测试中的临时目录
+  - pattern: 'tests?/.*'
+  - pattern: 'temp.*\.json'
+  
+  # 允许安装脚本的初始配置
+  - pattern: 'scripts/setup-config\.sh'

@@ -1,0 +1,40 @@
+# 熵防护规则: 禁止直接修改 sessions.json
+# sessions.json 必须通过 daemon IPC API 修改，直接编辑会导致状态不一致
+
+name: no-direct-sessions-modification
+severity: error
+description: 禁止直接修改 sessions.json，必须通过 mm-coder 命令或 daemon IPC API
+
+patterns:
+  # 直接 shell 写入 sessions.json
+  - type: regex
+    pattern: '(echo|cat|tee).*>.*sessions\.json'
+  - type: regex
+    pattern: 'mv.*sessions\.json'
+  # 编辑器直接打开 sessions.json
+  - type: regex
+    pattern: '(nano|vim|vi|emacs|sed).*sessions\.json'
+
+message: |
+  ⛔ 禁止直接修改 sessions.json！
+
+  sessions.json 必须通过以下方式修改：
+  1. mm-coder CLI: mm-coder create / remove / attach
+  2. daemon IPC: 通过 Unix socket 发送命令
+
+  直接修改 sessions.json 会导致：
+  - daemon 内存状态与磁盘状态不一致
+  - IM worker 可能读到损坏的 session 数据
+  - 正在运行的 IM worker 无法感知元数据变更
+
+  如果需要临时调试，请使用：
+  mm-coder status   # 查看当前状态（只读）
+  mm-coder list     # 列出所有 session（只读）
+
+exceptions:
+  # 允许测试中的临时文件
+  - pattern: 'tests?/.*'
+  - pattern: 'temp.*\.json'
+  # 允许 daemon 自身写入（进程内）
+  - condition: "file_has_indicator('src/daemon.ts') or file_has_indicator('src/session-registry.ts')"
+    severity: info
