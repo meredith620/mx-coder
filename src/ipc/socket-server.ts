@@ -8,10 +8,12 @@ import {
   encodePong,
   encodeEvent,
   type IPCEvent,
+  type IPCRequest,
   type ErrorCode,
 } from './codec.js';
 
-type Handler = (args: Record<string, unknown>) => Promise<Record<string, unknown>>;
+type Actor = IPCRequest['actor'];
+type Handler = (args: Record<string, unknown>, actor?: Actor) => Promise<Record<string, unknown>>;
 
 const PING_TIMEOUT_MS = 45_000;
 
@@ -112,7 +114,7 @@ export class IPCServer {
 
       if (msg.type !== 'request') return;
 
-      const { requestId, command, args } = msg;
+      const { requestId, command, args, actor } = msg;
 
       // Built-in subscribe command
       if (command === 'subscribe') {
@@ -128,7 +130,7 @@ export class IPCServer {
       }
 
       try {
-        const result = await handler(args);
+        const result = await handler(args, actor);
         socket.write(encodeResponse(requestId, result) + '\n');
       } catch (err) {
         const code: ErrorCode = err instanceof Error && 'code' in err
