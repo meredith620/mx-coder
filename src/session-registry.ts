@@ -113,6 +113,35 @@ export class SessionRegistry {
     return session;
   }
 
+  importSession(sessionId: string, name: string, opts: CreateOptions): Session {
+    if (this._sessions.has(name)) throw new Error('SESSION_ALREADY_EXISTS');
+    // Check for duplicate sessionId
+    for (const s of this._sessions.values()) {
+      if (s.sessionId === sessionId) throw new Error('SESSION_ALREADY_EXISTS');
+    }
+    const now = new Date();
+    const session: Session = {
+      name,
+      sessionId,
+      cliPlugin: opts.cliPlugin,
+      workdir: opts.workdir,
+      status: 'idle',
+      lifecycleStatus: 'active',
+      initState: 'initialized', // external session already initialized
+      revision: 0,
+      spawnGeneration: 0,
+      attachedPid: null,
+      imWorkerPid: null,
+      imWorkerCrashCount: 0,
+      imBindings: [],
+      messageQueue: [],
+      createdAt: now,
+      lastActivityAt: now,
+    };
+    this._sessions.set(name, session);
+    return session;
+  }
+
   get(name: string): Session | undefined {
     return this._sessions.get(name);
   }

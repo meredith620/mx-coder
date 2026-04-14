@@ -3,6 +3,7 @@ import { SessionRegistry } from './session-registry.js';
 import { AclManager } from './acl-manager.js';
 import type { AclAction, Actor } from './acl-manager.js';
 import type { ErrorCode } from './ipc/codec.js';
+import { randomUUID } from 'crypto';
 
 export class Daemon {
   private _server: IPCServer;
@@ -108,6 +109,28 @@ export class Daemon {
         return { waitRequired: true, session: this._serializeSession(updated) };
       }
       return { session: this._serializeSession(updated) };
+    });
+
+    this._server.handle('import', async (args, actor) => {
+      const sessionId = args['sessionId'] as string;
+      const workdir = args['workdir'] as string;
+      const cli = args['cli'] as string;
+      const name = (args['name'] as string | undefined) ?? `imported-${randomUUID().slice(0, 8)}`;
+
+      let session;
+      try {
+        session = this.registry.importSession(sessionId, name, { workdir, cliPlugin: cli });
+      } catch (err) {
+        const e = new Error((err as Error).message) as Error & { code: ErrorCode };
+        e.code = 'SESSION_ALREADY_EXISTS';
+        throw e;
+      }
+
+      if (actor?.userId) {
+        this._acl.grant(session, actor.userId, 'owner');
+      }
+
+      return { session: this._serializeSession(session) };
     });
   }
 
