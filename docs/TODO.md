@@ -29,7 +29,60 @@ Review 产出的待解决问题，按优先级排列。
   - **thinking block**：含 `thinking` 和 `signature` 字段（v2 新增）
   - 版本稳定性：v2.0.76 新增了 attachment/last-prompt/queue-operation，parseStream 需兼容处理未知 type
 
-## P1: 架构缺陷
+## P1: 架构缺陷（实现前阻塞）
+
+> 以下为本次 SPEC 补齐后新增的 P1 项，直接对应 SPEC §3.x 新增约束。全部 P1 完成后方可进入大规模实现。
+
+### 会话初始化与状态闭环（SPEC §3.2 / §9）
+
+- [ ] **initState 懒初始化闭环**：在 `initialized` 前禁止 `--resume`，首次 attach/IM 触发懒初始化（first-writer-wins）；其他 writer 返回 `SESSION_BUSY`
+  - 对应 SPEC §3.2 `initState` 字段、§3.6.1 first-writer-wins 规则
+- [ ] **lifecycleStatus 与 runtimeStatus 解耦**：两者独立迁移，`archived` session 禁止进入运行态；`initState` 与两者独立演进
+  - 对应 SPEC §9 状态关系说明
+
+### 并发原子性与竞态裁决（SPEC §3.6.1）
+
+- [ ] **会话级锁 + revision CAS**：所有 session 状态变更在单 session 锁内执行；提交时基于 `revision` CAS；冲突返回 `SESSION_BUSY`
+  - 对应 SPEC §3.6.1 "原子机制" 小节
+- [ ] **attach 优先于 IM**：idle 态并发到达时 attach 优先，IM 入队；attach 期间 IM 不入队；attach_exit 后重置 IM 队列处理
+  - 对应 SPEC §3.6.1 "attach 优先" 规则
+- [ ] **spawnGeneration 防重**：pre-warm 与 lazy spawn 使用 `spawnGeneration` 防双 worker；`imWorkerPid` 唯一性由 generation 保证
+  - 对应 SPEC §3.6.1 "worker 唯一性" 小节
+- [ ] **approval → takeover 优先级**：approval_pending 收到 takeover 时，先 cancel approval 再进入 takeover 流
+  - 对应 SPEC §3.6.1 "approval→takeover 优先级" 规则
+
+### 审批关联链路与仲裁协议（SPEC §3.4 / §6.3）
+
+- [ ] **ApprovalContext 关联链**：canUseTool 扩展签名（增加 messageId/correlationId/capability/operatorId）；审批结果必须匹配 requestId，不匹配 → stale 丢弃 + 审计
+  - 对应 SPEC §3.4 ApprovalContext 接口
+- [ ] **并发审批 first-write-wins**：同一 session 仅允许一个 pending；多 approver 并发时 first-write-wins，其余标记 cancelled/stale
+  - 对应 SPEC §3.4 "仲裁规则" 小节
+- [ ] **scope=session 粒度落地**：缓存键 = `sessionId + operatorId + capability`；生命周期 = session 结束/接管/reset 时失效
+  - 对应 SPEC §6.3；用户已确认按能力复用策略
+
+### ACL 三入口执行闭环（SPEC §6.1 / §6.2）
+
+- [ ] **CLI 命令入口鉴权**：socket server 在派发命令前完成 actor 鉴权；ACL_DENIED 零副作用（不入队、不迁移状态、不更新审批）
+  - 对应 SPEC §6.1 入口一
+- [ ] **IM 消息入口鉴权**：每条 IncomingMessage 解析为 IMCallbackAction 后鉴权；纯文本消息需 operator 角色；approver+ 扩展操作需 capability 维度检查
+  - 对应 SPEC §6.1 入口二
+- [ ] **审批动作入口约束**：autoAllow 仅限 read_only+low；autoDeny 仅限 shell_dangerous/network_destructive；其余必须走 requestApproval
+  - 对应 SPEC §6.1 入口三
+- [ ] **SESSION_BUSY 与 ACL_DENIED 语义隔离**：前者是并发问题（锁冲突），后者是权限问题（零副作用 + 错误码区分）
+  - 对应 SPEC §6.2
+
+### 恢复幂等算法（SPEC §3.8 / §3.9）
+
+- [ ] **dedupeKey 去重约束**：入站消息 dedupeKey = `<plugin>:<threadId>:<messageId>`；同一 dedupeKey 不得重复入队与重复执行
+  - 对应 SPEC §3.8 dedupeKey 定义、§3.9 去重约束
+- [ ] **replay/confirm/discard 判定矩阵**：低风险+无审批+未完成 → replay；高风险或带审批上下文 → confirm；明确拒绝/不可恢复 → discard
+  - 对应 SPEC §3.8 恢复决策矩阵
+- [ ] **replayOf 指针约束**：restoreAction=replay 时必须写入 replayOf 指针并审计
+  - 对应 SPEC §3.8 replay 约束
+- [ ] **审计最小字段**：每条恢复审计必须包含 dedupeKey、replayOf、requestId、operatorId、action、result
+  - 对应 SPEC §3.8 审计约束
+
+## 原有 P1（部分已check）
 
 ### Session 状态模型
 
@@ -62,6 +115,17 @@ Review 产出的待解决问题，按优先级排列。
 
 ## P2: 接口补全
 
+### 新增接口项（SPEC 补齐后）
+
+- [ ] **CLIEvent 强类型 + unknown 兼容**：parseStream 返回判别联合 `CLISystemEvent | CLIAssistantEvent | CLIUserEvent | CLIResultEvent | CLIAttachmentEvent | CLILastPromptEvent | CLIQueueOpEvent | CLIUnknownEvent`；unknown 类型保留 rawType 不丢弃
+  - 对应 SPEC §4.2 CLIEvent 类型定义
+- [ ] **IMInteractionCallback 契约**：Daemon → IM 的交互动作（approval_request/confirm_replay/takeover_request 等）；IM → Daemon 的 IMCallbackAction（approve/deny/cancel/takeover_hard/takeover_soft/confirm_replay/discard）
+  - 对应 SPEC §4.1.1
+- [ ] **CLI↔IPC 命令真值表**：attach/attach_exit/open/open_thread/takeover 等命令在 CLI 和 IPC 两端的参数格式和生命周期行为完全一致
+  - 对应 SPEC §3.7 IPC 命令表
+
+### CLIPlugin
+
 ### CLIPlugin
 
 - [x] 增加 `generateSessionId(): string` — 不同 CLI 的 session ID 格式可能不同
@@ -86,7 +150,7 @@ Review 产出的待解决问题，按优先级排列。
 ### 异常处理
 
 - [x] `claude -p` 进程崩溃/超时的处理策略 — 已在 §3.8 定版：退避重启 1s/3s/10s，超阈值 → error
-- [x] API 限流错误的处理策略 — 已在 §3.8 定版：不杀进程，2次延迟重试（2s/5s），仍失败 → failed
+- [x] API 限流错误的处理策略 — 已在 §3.8 定版：遵循 CLI 原生重试/失败语义，daemon 不在 stdout 层做 429 文本解析与二次重试；若 worker 因 429 异常退出，按 worker_crash 路径处理
 - [x] daemon 崩溃后的恢复算法：session、pending message、pending approval 的保守重建 — 已在 §3.8 定版
 
 ### 运行模式
