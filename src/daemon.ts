@@ -4,6 +4,7 @@ import { AclManager } from './acl-manager.js';
 import type { AclAction, Actor } from './acl-manager.js';
 import type { ErrorCode } from './ipc/codec.js';
 import { randomUUID } from 'crypto';
+import * as fs from 'fs';
 
 export class Daemon {
   private _server: IPCServer;
@@ -23,6 +24,14 @@ export class Daemon {
 
   async stop(): Promise<void> {
     await this._server.close();
+  }
+
+  /** Write PID file so CLI can detect running daemon */
+  writePidFile(pidFile: string): void {
+    fs.writeFileSync(pidFile, String(process.pid), 'utf-8');
+    process.on('exit', () => {
+      try { fs.unlinkSync(pidFile); } catch { /* ignore */ }
+    });
   }
 
   private _registerHandlers(): void {
