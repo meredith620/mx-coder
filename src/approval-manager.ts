@@ -34,7 +34,7 @@ export interface DecideResult {
   cancelReason?: string;
 }
 
-interface ApprovalState {
+export interface ApprovalState {
   requestId: string;
   sessionId: string;
   decision: ApprovalDecision;
