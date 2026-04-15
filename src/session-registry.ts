@@ -268,6 +268,46 @@ export class SessionRegistry {
     return { alreadyExists: false };
   }
 
+  markDetached(name: string, _exitReason?: 'normal' | 'error'): void {
+    const s = this._getOrThrow(name);
+    this._guardLifecycle(s);
+    this._applyTransition(s, 'attach_exit_normal');
+    s.attachedPid = null;
+  }
+
+  markImProcessing(name: string, workerPid?: number): void {
+    const s = this._getOrThrow(name);
+    this._guardLifecycle(s);
+    this._applyTransition(s, 'im_message_received');
+    if (workerPid !== undefined) s.imWorkerPid = workerPid;
+  }
+
+  markImDone(name: string): void {
+    const s = this._getOrThrow(name);
+    this._guardLifecycle(s);
+    if (s.status === 'im_processing') {
+      this._applyTransition(s, 'message_completed');
+    } else if (s.status === 'attach_pending') {
+      // IM done while attach was waiting → transition to attached
+      this._applyTransition(s, 'im_message_completed_and_worker_stopped');
+    }
+    s.imWorkerPid = null;
+  }
+
+  markAttachPending(name: string): void {
+    const s = this._getOrThrow(name);
+    this._guardLifecycle(s);
+    this._applyTransition(s, 'attach_start');
+  }
+
+  markAttachResumed(name: string): void {
+    const s = this._getOrThrow(name);
+    this._guardLifecycle(s);
+    if (s.status === 'attach_pending') {
+      this._applyTransition(s, 'im_message_completed_and_worker_stopped');
+    }
+  }
+
   replayMessage(name: string, originalDedupeKey: string): QueuedMessage {
     const s = this._getOrThrow(name);
     const original = s.messageQueue.find(m => m.dedupeKey === originalDedupeKey);

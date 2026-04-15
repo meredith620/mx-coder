@@ -26,12 +26,14 @@ export function parseCLIArgs(argv: string[]): ParsedCLI {
   const positionals: string[] = [];
 
   while (i < rest.length) {
-    if (rest[i].startsWith('--')) {
-      const key = rest[i].slice(2);
+    const cur = rest[i];
+    if (cur === undefined) break;
+    if (cur.startsWith('--')) {
+      const key = cur.slice(2);
       args[key] = rest[i + 1];
       i += 2;
     } else {
-      positionals.push(rest[i]);
+      positionals.push(cur);
       i += 1;
     }
   }

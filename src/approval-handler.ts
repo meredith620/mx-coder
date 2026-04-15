@@ -103,7 +103,7 @@ export class ApprovalHandler {
           toolName,
           toolInputSummary: JSON.stringify(toolInput).slice(0, 200),
           riskLevel: 'medium',
-          capability: 'bash',
+          capability: 'shell_dangerous',
           scopeOptions: ['once', 'session'],
           timeoutSeconds: 60,
         });

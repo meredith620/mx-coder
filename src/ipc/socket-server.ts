@@ -13,7 +13,7 @@ import {
 } from './codec.js';
 
 type Actor = IPCRequest['actor'];
-type Handler = (args: Record<string, unknown>, actor?: Actor) => Promise<Record<string, unknown>>;
+type Handler = (args: Record<string, unknown>, actor?: Actor, socket?: net.Socket) => Promise<Record<string, unknown>>;
 
 const PING_TIMEOUT_MS = 45_000;
 
@@ -63,6 +63,15 @@ export class IPCServer {
         try { fs.unlinkSync(this._socketPath); } catch { /* ignore */ }
         resolve();
       });
+    });
+  }
+
+  registerAttachWaiter(sessionName: string, socket: net.Socket): void {
+    this._attachWaiters.set(sessionName, socket);
+    socket.on('close', () => {
+      if (this._attachWaiters.get(sessionName) === socket) {
+        this._attachWaiters.delete(sessionName);
+      }
     });
   }
 
@@ -130,7 +139,7 @@ export class IPCServer {
       }
 
       try {
-        const result = await handler(args, actor);
+        const result = await handler(args, actor, socket);
         socket.write(encodeResponse(requestId, result) + '\n');
       } catch (err) {
         const code: ErrorCode = err instanceof Error && 'code' in err

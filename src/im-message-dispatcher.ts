@@ -13,6 +13,7 @@ export interface IMMessageDispatcherOptions {
   cliArgs: string[];
   pollIntervalMs?: number;
   maxRetries?: number;
+  onSessionImDone?: (sessionName: string) => void;
 }
 
 /**
@@ -69,6 +70,12 @@ export class IMMessageDispatcher {
   private async _processMessage(sessionName: string, messageId: string, attempt = 0): Promise<void> {
     const maxRetries = this._opts.maxRetries ?? 1;
     const streamToIM = new StreamToIM(this._opts.imPlugin, this._opts.imTarget);
+    const registry = this._opts.registry;
+
+    // Update session status to im_processing
+    try {
+      registry.markImProcessing(sessionName);
+    } catch { /* session may not exist or invalid transition */ }
 
     try {
       const exitCode = await new Promise<number>((resolve) => {
@@ -99,6 +106,17 @@ export class IMMessageDispatcher {
         await new Promise(resolve => setTimeout(resolve, 200));
         return this._processMessage(sessionName, messageId, attempt + 1);
       }
+    } finally {
+      // Mark message as completed and update session status
+      const session = registry.get(sessionName);
+      if (session) {
+        const msg = session.messageQueue.find(m => m.messageId === messageId);
+        if (msg) msg.status = 'completed';
+      }
+      try {
+        registry.markImDone(sessionName);
+        this._opts.onSessionImDone?.(sessionName);
+      } catch { /* ignore invalid transitions */ }
     }
   }
 }

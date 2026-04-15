@@ -146,10 +146,17 @@ export class ApprovalManager {
       requestId,
       sessionId,
       decision: 'pending',
-      capability: ctx.capability,
-      operatorId: ctx.operatorId,
+      ...(ctx.capability !== undefined && { capability: ctx.capability }),
+      ...(ctx.operatorId !== undefined && { operatorId: ctx.operatorId }),
       _decided: false,
-      context: { sessionId, messageId, toolUseId, correlationId, capability: ctx.capability, operatorId: ctx.operatorId },
+      context: {
+        sessionId,
+        messageId,
+        toolUseId,
+        correlationId,
+        ...(ctx.capability !== undefined && { capability: ctx.capability }),
+        ...(ctx.operatorId !== undefined && { operatorId: ctx.operatorId }),
+      },
     };
     this._states.set(requestId, state);
     this._mutexes.set(requestId, makeMutex());
@@ -181,7 +188,7 @@ export class ApprovalManager {
         return { status: 'cancelled' };
       }
       state.decision = input.decision;
-      state.scope = input.scope;
+      if (input.scope !== undefined) state.scope = input.scope;
       state._decided = true;
 
       // Handle scope=session cache
@@ -207,7 +214,7 @@ export class ApprovalManager {
         return { status: 'stale' };
       }
       state.decision = input.decision;
-      state.scope = input.scope;
+      if (input.scope !== undefined) state.scope = input.scope;
       state._decided = true;
       return { status: state.decision };
     } finally {
