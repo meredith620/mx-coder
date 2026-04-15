@@ -2,7 +2,7 @@ import { spawn } from 'child_process';
 import * as readline from 'readline';
 import type { SessionRegistry } from './session-registry.js';
 import type { IMPlugin } from './plugins/types.js';
-import type { MessageTarget } from './types.js';
+import type { MessageTarget, QueuedMessage, Session } from './types.js';
 import { StreamToIM } from './stream-to-im.js';
 
 export interface IMMessageDispatcherOptions {
@@ -67,10 +67,39 @@ export class IMMessageDispatcher {
     }
   }
 
+  private _getSessionAndMessage(sessionName: string, messageId: string): { session: Session; message: QueuedMessage } {
+    const session = this._opts.registry.get(sessionName);
+    if (!session) throw new Error(`Session not found: ${sessionName}`);
+    const message = session.messageQueue.find(m => m.messageId === messageId);
+    if (!message) throw new Error(`Queued message not found: ${messageId}`);
+    return { session, message };
+  }
+
+  private _buildTarget(message: QueuedMessage): MessageTarget {
+    return {
+      ...this._opts.imTarget,
+      threadId: message.threadId,
+      userId: message.userId,
+    };
+  }
+
+  private _buildClaudeArgs(session: Session, message: QueuedMessage): string[] {
+    return [
+      '-p',
+      message.content,
+      '--resume', session.sessionId,
+      '--output-format', 'stream-json',
+    ];
+  }
+
   private async _processMessage(sessionName: string, messageId: string, attempt = 0): Promise<void> {
     const maxRetries = this._opts.maxRetries ?? 1;
-    const streamToIM = new StreamToIM(this._opts.imPlugin, this._opts.imTarget);
     const registry = this._opts.registry;
+    const { session, message } = this._getSessionAndMessage(sessionName, messageId);
+    const streamToIM = new StreamToIM(this._opts.imPlugin, this._buildTarget(message));
+
+    let finalStatus: QueuedMessage['status'] = 'failed';
+    let currentAttempt = attempt;
 
     // Update session status to im_processing
     try {
@@ -78,40 +107,49 @@ export class IMMessageDispatcher {
     } catch { /* session may not exist or invalid transition */ }
 
     try {
-      const exitCode = await new Promise<number>((resolve) => {
-        const proc = spawn(this._opts.cliCommand, this._opts.cliArgs, {
-          stdio: ['pipe', 'pipe', 'pipe'],
-        });
+      while (currentAttempt <= maxRetries) {
+        try {
+          const exitCode = await new Promise<number>((resolve) => {
+            const proc = spawn(this._opts.cliCommand, this._buildClaudeArgs(session, message), {
+              stdio: ['pipe', 'pipe', 'pipe'],
+              cwd: session.workdir,
+            });
 
-        const rl = readline.createInterface({ input: proc.stdout!, crlfDelay: Infinity });
-        rl.on('line', (line) => {
-          if (!line.trim()) return;
-          try {
-            const event = JSON.parse(line) as { type: string; payload: unknown };
-            void streamToIM.onEvent(event as Parameters<typeof streamToIM.onEvent>[0]);
-          } catch { /* ignore non-JSON */ }
-        });
+            const rl = readline.createInterface({ input: proc.stdout!, crlfDelay: Infinity });
+            rl.on('line', (line) => {
+              if (!line.trim()) return;
+              try {
+                const event = JSON.parse(line) as { type: string; payload: unknown };
+                void streamToIM.onEvent(event as Parameters<typeof streamToIM.onEvent>[0]);
+              } catch { /* ignore non-JSON */ }
+            });
 
-        proc.on('close', (code) => resolve(code ?? 0));
-        proc.on('error', () => resolve(1));
-      });
+            proc.on('close', (code) => resolve(code ?? 0));
+            proc.on('error', () => resolve(1));
+          });
 
-      if (exitCode !== 0 && attempt < maxRetries) {
-        // Retry after short delay
-        await new Promise(resolve => setTimeout(resolve, 200));
-        return this._processMessage(sessionName, messageId, attempt + 1);
-      }
-    } catch {
-      if (attempt < maxRetries) {
-        await new Promise(resolve => setTimeout(resolve, 200));
-        return this._processMessage(sessionName, messageId, attempt + 1);
+          if (exitCode === 0) {
+            finalStatus = 'completed';
+            break;
+          }
+        } catch {
+          // handled by retry branch below
+        }
+
+        if (currentAttempt < maxRetries) {
+          currentAttempt += 1;
+          await new Promise(resolve => setTimeout(resolve, 200));
+          continue;
+        }
+
+        finalStatus = 'failed';
+        break;
       }
     } finally {
-      // Mark message as completed and update session status
-      const session = registry.get(sessionName);
-      if (session) {
-        const msg = session.messageQueue.find(m => m.messageId === messageId);
-        if (msg) msg.status = 'completed';
+      const current = registry.get(sessionName);
+      if (current) {
+        const currentMessage = current.messageQueue.find(m => m.messageId === messageId);
+        if (currentMessage) currentMessage.status = finalStatus;
       }
       try {
         registry.markImDone(sessionName);

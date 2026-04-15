@@ -37,4 +37,9 @@ export interface IMPlugin {
    * Send an approval request to the IM platform
    */
   requestApproval(target: MessageTarget, request: ApprovalRequest): Promise<void>;
+
+  /**
+   * Graceful shutdown — close connections and release resources
+   */
+  disconnect?(): Promise<void>;
 }

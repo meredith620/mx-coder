@@ -53,6 +53,12 @@ describe('StreamToIM — 流式输出防抖', () => {
     expect(mockIM.liveMessages.size).toBe(1);
   });
 
+  test('createLiveMessage 使用构造时传入的 thread target', async () => {
+    await handler.onEvent({ type: 'assistant', payload: { message: { content: [{ type: 'text', text: 'Hi' }] } } });
+    const msgId = [...mockIM.liveMessages.keys()][0];
+    expect(mockIM.liveMessageTargets.get(msgId)?.threadId).toBe('t1');
+  });
+
   test('error 事件立即 flush', async () => {
     await handler.onEvent({ type: 'assistant', payload: { message: { content: [{ type: 'text', text: 'partial' }] } } });
     const msgId = [...mockIM.liveMessages.keys()][0];

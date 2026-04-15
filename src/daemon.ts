@@ -2,13 +2,22 @@ import { IPCServer } from './ipc/socket-server.js';
 import { SessionRegistry } from './session-registry.js';
 import { AclManager } from './acl-manager.js';
 import { PersistenceStore } from './persistence.js';
+import { IMMessageDispatcher } from './im-message-dispatcher.js';
+import { IMWorkerManager } from './im-worker-manager.js';
+import { createConnectedMattermostPlugin, getDefaultMattermostConfigPath, loadMattermostConfig, getMattermostCommandHelpText } from './plugins/im/mattermost.js';
+import { ClaudeCodePlugin } from './plugins/cli/claude-code.js';
+import type { IMPlugin } from './plugins/types.js';
+import type { IncomingMessage, MessageTarget } from './types.js';
 import type { AclAction, Actor } from './acl-manager.js';
 import type { ErrorCode } from './ipc/codec.js';
 import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 
+
 export interface DaemonOptions {
   persistencePath?: string;
+  imConfigPath?: string;
+  enableIM?: boolean;
 }
 
 export class Daemon {
@@ -16,6 +25,9 @@ export class Daemon {
   registry: SessionRegistry;
   private _acl: AclManager;
   private _store: PersistenceStore | null;
+  private _imPlugin: IMPlugin | null = null;
+  private _imDispatcher: IMMessageDispatcher | null = null;
+  private _imWorkerManager: IMWorkerManager | null = null;
 
   constructor(socketPath: string, opts: DaemonOptions = {}) {
     this._server = new IPCServer(socketPath);
@@ -23,6 +35,181 @@ export class Daemon {
     this.registry = new SessionRegistry(this._store ?? undefined);
     this._acl = new AclManager();
     this._registerHandlers();
+
+    // Initialize IM if enabled
+    if (opts.enableIM) {
+      void this._initializeIM(opts.imConfigPath);
+    }
+  }
+
+  private async _initializeIM(configPath?: string): Promise<void> {
+    try {
+      const path = configPath ?? getDefaultMattermostConfigPath();
+      const mattermostConfig = loadMattermostConfig(path);
+      this._imPlugin = await createConnectedMattermostPlugin(path);
+
+      // Register message handler: Mattermost → SessionRegistry queue / command handling
+      this._imPlugin.onMessage((msg) => {
+        void this._handleIncomingIMMessage(msg, mattermostConfig.channelId);
+      });
+
+      // Initialize CLI plugin
+      const cliPlugin = new ClaudeCodePlugin();
+
+      // Initialize worker manager
+      this._imWorkerManager = new IMWorkerManager(cliPlugin, this.registry);
+
+      // Initialize message dispatcher
+      this._imDispatcher = new IMMessageDispatcher({
+        registry: this.registry,
+        imPlugin: this._imPlugin,
+        imTarget: {
+          plugin: 'mattermost',
+          channelId: mattermostConfig.channelId,
+          threadId: '',
+        },
+        cliCommand: 'claude',
+        cliArgs: ['--output-format', 'stream-json'],
+        pollIntervalMs: 500,
+      });
+
+      // Start dispatcher
+      this._imDispatcher.start();
+
+      console.log('IM plugin connected and dispatcher started');
+    } catch (err) {
+      console.error(`Failed to initialize IM: ${(err as Error).message}`);
+    }
+  }
+
+  private async _handleIncomingIMMessage(msg: IncomingMessage, channelId: string): Promise<void> {
+    if (!this._imPlugin) return;
+
+    const trimmed = msg.text.trim();
+    if (trimmed === '/help') {
+      await this._imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+        kind: 'text',
+        text: getMattermostCommandHelpText(),
+      });
+      return;
+    }
+
+    if (trimmed === '/list') {
+      await this._imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+        kind: 'text',
+        text: this._renderIMSessionList(),
+      });
+      return;
+    }
+
+    if (trimmed === '/open' || trimmed.startsWith('/open ')) {
+      const sessionName = trimmed === '/open' ? '' : trimmed.slice('/open '.length).trim();
+      await this._handleOpenCommand(sessionName, channelId, msg);
+      return;
+    }
+
+    const session = this._getOrCreateSessionForThread(msg.threadId, msg.plugin);
+    try {
+      this.registry.enqueueIMMessage(session.name, {
+        text: msg.text,
+        dedupeKey: msg.dedupeKey,
+        plugin: msg.plugin,
+        threadId: msg.threadId,
+        messageId: msg.messageId,
+        userId: msg.userId,
+        receivedAt: msg.createdAt,
+      });
+    } catch (err) {
+      console.error(`Failed to enqueue IM message: ${(err as Error).message}`);
+    }
+  }
+
+  private _buildReplyTarget(msg: IncomingMessage, channelId: string): MessageTarget {
+    return {
+      plugin: msg.plugin,
+      channelId: msg.channelId ?? channelId,
+      threadId: msg.threadId,
+      userId: msg.userId,
+    };
+  }
+
+  private _getOrCreateSessionForThread(threadId: string, plugin: string) {
+    const existing = this.registry.getByIMThread(plugin, threadId);
+    if (existing) return existing;
+
+    const name = this._makeSessionName(threadId);
+    const session = this.registry.create(name, {
+      workdir: process.cwd(),
+      cliPlugin: 'claude-code',
+    });
+    this.registry.bindIM(name, { plugin, threadId });
+    return session;
+  }
+
+  private _makeSessionName(threadId: string): string {
+    const base = `im-${threadId.slice(0, 8)}`;
+    if (!this.registry.get(base)) return base;
+
+    let i = 2;
+    while (this.registry.get(`${base}-${i}`)) {
+      i += 1;
+    }
+    return `${base}-${i}`;
+  }
+
+  private _renderIMSessionList(): string {
+    const sessions = this.registry.list();
+    if (sessions.length === 0) {
+      return '当前没有 mm-coder 会话。直接发送一条消息即可创建新会话。';
+    }
+
+    const lines = sessions.map((session) => {
+      const binding = session.imBindings.find((item) => item.plugin === 'mattermost');
+      const thread = binding ? binding.threadId : '未绑定';
+      return `- ${session.name} (${session.status}) thread=${thread}`;
+    });
+
+    return [
+      '当前 mm-coder 会话：',
+      ...lines,
+      '',
+      '发送 /open <sessionName> 可在对应 thread 中收到定位消息。',
+    ].join('\n');
+  }
+
+  private async _handleOpenCommand(sessionName: string, channelId: string, msg: IncomingMessage): Promise<void> {
+    if (!this._imPlugin) return;
+    if (!sessionName) {
+      await this._imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+        kind: 'text',
+        text: '用法：/open <sessionName>',
+      });
+      return;
+    }
+
+    const session = this.registry.get(sessionName);
+    const binding = session?.imBindings.find((item) => item.plugin === 'mattermost');
+    if (!session || !binding) {
+      await this._imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+        kind: 'text',
+        text: `未找到会话 ${sessionName}，或该会话尚未绑定 Mattermost thread。`,
+      });
+      return;
+    }
+
+    await this._imPlugin.sendMessage({
+      plugin: 'mattermost',
+      channelId,
+      threadId: binding.threadId,
+    }, {
+      kind: 'text',
+      text: `已定位到会话 ${sessionName}。请直接在这个 thread 中继续对话。`,
+    });
+
+    await this._imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+      kind: 'text',
+      text: `已在会话 ${sessionName} 对应的 thread 中发送定位消息。`,
+    });
   }
 
   async start(): Promise<void> {
@@ -33,6 +220,15 @@ export class Daemon {
   }
 
   async stop(): Promise<void> {
+    // Stop IM components
+    if (this._imDispatcher) {
+      this._imDispatcher.stop();
+    }
+    if (this._imPlugin) {
+      await this._imPlugin.disconnect?.();
+    }
+
+    // Stop daemon core
     if (this._store) {
       await this._store.flush();
     }

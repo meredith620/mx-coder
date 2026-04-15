@@ -27,6 +27,13 @@ describe('IMPlugin 接口', () => {
     expect(plugin.liveMessages.has(msgId)).toBe(true);
   });
 
+  test('MockIMPlugin.createLiveMessage 记录 target', async () => {
+    const plugin = new MockIMPlugin();
+    const target = { plugin: 'mock', threadId: 't1' };
+    const msgId = await plugin.createLiveMessage(target, { kind: 'text', text: 'live' });
+    expect(plugin.liveMessageTargets.get(msgId)?.threadId).toBe('t1');
+  });
+
   test('MockIMPlugin.updateMessage 更新已存在的 live message', async () => {
     const plugin = new MockIMPlugin();
     const msgId = await plugin.createLiveMessage({ plugin: 'mock', threadId: 't1' }, { kind: 'text', text: 'v1' });

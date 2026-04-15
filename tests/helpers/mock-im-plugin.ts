@@ -11,6 +11,7 @@ export class MockIMPlugin implements IMPlugin {
   private _handlers: Array<(msg: IncomingMessage) => void> = [];
   sent: SentRecord[] = [];
   liveMessages = new Map<string, string>(); // messageId → text content
+  liveMessageTargets = new Map<string, MessageTarget>();
   approvalRequests: ApprovalRequest[] = [];
 
   onMessage(handler: (msg: IncomingMessage) => void): void {
@@ -38,6 +39,7 @@ export class MockIMPlugin implements IMPlugin {
     const msgId = uuidv4();
     const text = content.kind === 'text' ? content.text : content.kind === 'markdown' ? content.markdown : '';
     this.liveMessages.set(msgId, text);
+    this.liveMessageTargets.set(msgId, target);
     return msgId;
   }
 

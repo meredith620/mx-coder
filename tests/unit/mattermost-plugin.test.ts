@@ -6,6 +6,8 @@ import {
   MattermostPlugin,
   loadMattermostConfig,
   createConnectedMattermostPlugin,
+  getMattermostCommandHelpText,
+  getMattermostWelcomeText,
 } from '../../src/plugins/im/mattermost.js';
 
 type WSStub = {
@@ -37,6 +39,21 @@ describe('Mattermost config loader', () => {
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test('帮助文案包含常用普通消息命令', () => {
+    const text = getMattermostCommandHelpText();
+    expect(text).toContain('/help');
+    expect(text).toContain('/list');
+    expect(text).toContain('/open <sessionName>');
+    expect(text).toContain('普通消息');
+  });
+
+  test('欢迎文案包含 bot 名称和帮助信息', () => {
+    const text = getMattermostWelcomeText('bot-user');
+    expect(text).toContain('bot-user');
+    expect(text).toContain('/help');
+    expect(text).toContain('/list');
   });
 
   test('支持顶层配置结构', () => {
@@ -116,6 +133,10 @@ describe('Mattermost config loader', () => {
     const plugin = await createConnectedMattermostPlugin(configPath);
     expect(plugin).toBeInstanceOf(MattermostPlugin);
     expect(fetchMock).toHaveBeenCalledTimes(2); // GET /users/me + POST welcome message
+    const [, welcomeOpts] = fetchMock.mock.calls[1];
+    const welcomeBody = JSON.parse(welcomeOpts.body);
+    expect(welcomeBody.message).toContain('/help');
+    expect(welcomeBody.message).toContain('/list');
   });
 });
 

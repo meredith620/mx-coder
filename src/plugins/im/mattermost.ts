@@ -100,6 +100,26 @@ export function loadMattermostConfig(configPath = getDefaultMattermostConfigPath
   };
 }
 
+export function getMattermostCommandHelpText(): string {
+  return [
+    '可用普通消息命令：',
+    '- /help：显示帮助',
+    '- /list：列出当前 mm-coder 会话',
+    '- /open <sessionName>：在对应 thread 中发送定位消息',
+    '',
+    '直接发送其他文本即可让 mm-coder 处理。',
+    '注意：这些是发给 mm-coder 的普通消息，不是 Mattermost slash command。',
+  ].join('\n');
+}
+
+export function getMattermostWelcomeText(username: string): string {
+  return [
+    `mm-coder 已连接（bot: ${username}）`,
+    '',
+    getMattermostCommandHelpText(),
+  ].join('\n');
+}
+
 /**
  * Convenience helper: load config file, create plugin, connect and validate token.
  */
@@ -161,7 +181,7 @@ export class MattermostPlugin implements IMPlugin {
     // Send welcome message
     await this.sendMessage(
       { plugin: 'mattermost', channelId: this._config.channelId, threadId: '' },
-      { kind: 'text', text: `mm-coder bot connected (user: ${me.username})` },
+      { kind: 'text', text: getMattermostWelcomeText(me.username) },
     );
   }
 
