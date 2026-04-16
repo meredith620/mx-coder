@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -8,17 +8,28 @@ import { IPCClient } from './ipc/client.js';
 import { attachSession } from './attach.js';
 import { parseCLIArgs } from './cli-parser.js';
 import { getCLIPlugin } from './plugins/cli/registry.js';
-import { getIMPluginFactory, listIMPlugins } from './plugins/im/registry.js';
+import { getIMPluginFactory } from './plugins/im/registry.js';
 
 const SOCKET_PATH = process.env.MM_CODER_SOCKET ?? path.join(os.tmpdir(), 'mm-coder-daemon.sock');
 const PID_FILE = process.env.MM_CODER_PID_FILE ?? path.join(os.tmpdir(), 'mm-coder-daemon.pid');
 const PERSISTENCE_PATH = process.env.MM_CODER_SESSIONS ?? path.join(os.homedir(), '.mm-coder', 'sessions.json');
+const VERSION = '0.1.0';
+const GIT_HASH = execSync('git rev-parse --short HEAD', { encoding: 'utf-8' }).trim();
+
+function printVersion() {
+  console.log(`mm-coder ${VERSION} (${GIT_HASH})`);
+}
 
 async function main() {
   const argv = process.argv.slice(2);
 
   if (argv.length === 0 || argv[0] === '--help' || argv[0] === '-h') {
     printHelp();
+    process.exit(0);
+  }
+
+  if (argv[0] === '--version' || argv[0] === '-v') {
+    printVersion();
     process.exit(0);
   }
 
@@ -95,6 +106,7 @@ COMMANDS:
                                   Verify IM connectivity
   im run <sessionName>            Run IM worker for a session
   --help, -h                      Show this help
+  --version, -v                   Show version info
 
 EXAMPLES:
   mm-coder start
@@ -110,23 +122,19 @@ EXAMPLES:
 }
 
 async function handleStart() {
-  // Check if daemon already running
   if (fs.existsSync(PID_FILE)) {
     const pid = parseInt(fs.readFileSync(PID_FILE, 'utf-8').trim(), 10);
     try {
-      process.kill(pid, 0); // Check if process exists
+      process.kill(pid, 0);
       console.log(`Daemon already running (PID ${pid})`);
       return;
     } catch {
-      // PID file stale, remove it
       fs.unlinkSync(PID_FILE);
     }
   }
 
-  // Ensure persistence directory exists
   fs.mkdirSync(path.dirname(PERSISTENCE_PATH), { recursive: true });
 
-  // Fork daemon to background
   const child = spawn(process.execPath, [
     path.join(path.dirname(fileURLToPath(import.meta.url)), 'daemon-main.js'),
     SOCKET_PATH,
@@ -151,8 +159,7 @@ async function handleStop() {
   try {
     process.kill(pid, 'SIGTERM');
     console.log(`Daemon stopped (PID ${pid})`);
-  } catch (err) {
-    // Process not found — clean up stale PID file
+  } catch {
     try { fs.unlinkSync(PID_FILE); } catch { /* ignore */ }
     console.log('Daemon was not running (stale PID file removed)');
   }
@@ -160,7 +167,6 @@ async function handleStop() {
 
 async function handleRestart() {
   await handleStop();
-  // Brief wait to allow daemon to flush and exit
   await new Promise(resolve => setTimeout(resolve, 500));
   await handleStart();
 }
@@ -194,7 +200,6 @@ async function handleAttach(args: Record<string, string | undefined>) {
     throw new Error('Missing required argument: name');
   }
 
-  // Query session info from daemon to get the CLI plugin name
   const client = new IPCClient(SOCKET_PATH);
   await client.connect();
   const res = await client.send('status', {});
@@ -347,7 +352,7 @@ async function handleImInit(args: Record<string, string | undefined>) {
     console.log('Next steps:');
     console.log(`  1. Edit ${configPath}`);
     console.log(`  2. Fill in your ${pluginName} configuration`);
-    console.log(`  3. Run: mm-coder im-verify --plugin ${pluginName}`);
+    console.log(`  3. Run: mm-coder im verify -p ${pluginName}`);
   } catch (err) {
     throw new Error((err as Error).message);
   }
@@ -370,4 +375,3 @@ main().catch(err => {
   console.error(`Fatal error: ${err.message}`);
   process.exit(1);
 });
-
