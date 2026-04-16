@@ -115,7 +115,7 @@ export function getMattermostCommandHelpText(): string {
     '`/help` — 显示本帮助',
     '`/list` — 列出所有 mm-coder session 及绑定 thread',
     '`/status` — 显示当前 session 状态（在 thread 中）或全局统计（在主频道）',
-    '`/open <sessionName>` — 在 session 对应的 thread 中发送定位消息',
+    '`/open <sessionName>` — 为未绑定 session 创建独立 thread；已有绑定则跳转到对应 thread',
     '',
     '在 thread 中发送普通文本消息将交给 Claude 处理。',
     '`/remove`、`/attach`、`/create` 等 session 管理命令请在 CLI 中使用。',

@@ -261,22 +261,6 @@ export class Daemon {
     }
 
     const session = this.registry.get(sessionName);
-    const binding = session?.imBindings.find((item) => item.plugin === 'mattermost');
-
-    // session 存在但尚未绑定 IM thread → 自动绑定到当前 thread
-    if (session && !binding) {
-      this.registry.bindIM(sessionName, {
-        plugin: 'mattermost',
-        threadId: msg.threadId,
-        channelId: msg.channelId ?? channelId,
-      });
-
-      await this._imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
-        kind: 'text',
-        text: `已将 ${sessionName} 绑定到此 thread。现在可以直接对话。`,
-      });
-      return;
-    }
 
     if (!session) {
       await this._imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
@@ -286,20 +270,41 @@ export class Daemon {
       return;
     }
 
-    // 已有绑定：向目标 session 绑定 thread 发定位消息 + 向当前 thread 发确认
-    await this._imPlugin.sendMessage({
-      plugin: 'mattermost',
-      channelId,
-      threadId: binding!.threadId,
-    }, {
-      kind: 'text',
-      text: `已定位到会话 ${sessionName}。请直接在这个 thread 中继续对话。`,
-    });
+    const binding = session.imBindings.find((item) => item.plugin === 'mattermost');
 
-    await this._imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
-      kind: 'text',
-      text: `已在会话 ${sessionName} 对应的 thread 中发送定位消息。`,
-    });
+    if (binding) {
+      // 已有绑定：向目标 session 绑定 thread 发锚点 + 当前 thread 发确认
+      await this._imPlugin.sendMessage({
+        plugin: 'mattermost',
+        channelId,
+        threadId: binding.threadId,
+      }, {
+        kind: 'text',
+        text: `已定位到会话 ${sessionName}。请直接在这个 thread 中继续对话。`,
+      });
+
+      await this._imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+        kind: 'text',
+        text: `已在会话 ${sessionName} 的 thread 中发送定位消息。`,
+      });
+    } else {
+      // 无绑定：为 session 创建新 thread（发 root post），绑定后回复
+      const newThreadId = await this._imPlugin.createLiveMessage(
+        { plugin: 'mattermost', channelId, threadId: '' },
+        { kind: 'text', text: `[${sessionName} thread — 请在此继续对话]` },
+      );
+
+      this.registry.bindIM(sessionName, {
+        plugin: 'mattermost',
+        threadId: newThreadId,
+        channelId,
+      });
+
+      await this._imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+        kind: 'text',
+        text: `已为会话 ${sessionName} 创建独立 thread。已在该 thread 发送定位消息，可直接开始对话。`,
+      });
+    }
   }
 
   async start(): Promise<void> {
