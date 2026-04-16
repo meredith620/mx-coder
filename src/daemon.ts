@@ -262,18 +262,35 @@ export class Daemon {
 
     const session = this.registry.get(sessionName);
     const binding = session?.imBindings.find((item) => item.plugin === 'mattermost');
-    if (!session || !binding) {
+
+    // session 存在但尚未绑定 IM thread → 自动绑定到当前 thread
+    if (session && !binding) {
+      this.registry.bindIM(sessionName, {
+        plugin: 'mattermost',
+        threadId: msg.threadId,
+        channelId: msg.channelId ?? channelId,
+      });
+
       await this._imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
         kind: 'text',
-        text: `未找到会话 ${sessionName}，或该会话尚未绑定 Mattermost thread。`,
+        text: `已将 ${sessionName} 绑定到此 thread。现在可以直接对话。`,
       });
       return;
     }
 
+    if (!session) {
+      await this._imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+        kind: 'text',
+        text: `未找到会话 ${sessionName}，请先使用 mm-coder create 创建。`,
+      });
+      return;
+    }
+
+    // 已有绑定：向目标 session 绑定 thread 发定位消息 + 向当前 thread 发确认
     await this._imPlugin.sendMessage({
       plugin: 'mattermost',
       channelId,
-      threadId: binding.threadId,
+      threadId: binding!.threadId,
     }, {
       kind: 'text',
       text: `已定位到会话 ${sessionName}。请直接在这个 thread 中继续对话。`,
