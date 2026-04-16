@@ -4,8 +4,9 @@ import { AclManager } from './acl-manager.js';
 import { PersistenceStore } from './persistence.js';
 import { IMMessageDispatcher } from './im-message-dispatcher.js';
 import { IMWorkerManager } from './im-worker-manager.js';
-import { createConnectedMattermostPlugin, getDefaultMattermostConfigPath, loadMattermostConfig, getMattermostCommandHelpText } from './plugins/im/mattermost.js';
-import { ClaudeCodePlugin } from './plugins/cli/claude-code.js';
+import { getMattermostCommandHelpText } from './plugins/im/mattermost.js';
+import { getIMPluginFactory } from './plugins/im/registry.js';
+import { getCLIPlugin } from './plugins/cli/registry.js';
 import type { IMPlugin } from './plugins/types.js';
 import type { IncomingMessage, MessageTarget, Session } from './types.js';
 import type { AclAction, Actor } from './acl-manager.js';
@@ -18,6 +19,7 @@ export interface DaemonOptions {
   persistencePath?: string;
   imConfigPath?: string;
   enableIM?: boolean;
+  imPluginName?: string;
 }
 
 export class Daemon {
@@ -38,30 +40,25 @@ export class Daemon {
 
     // Initialize IM if enabled
     if (opts.enableIM) {
-      void this._initializeIM(opts.imConfigPath);
+      void this._initializeIM(opts.imPluginName ?? 'mattermost', opts.imConfigPath);
     }
   }
 
-  private async _initializeIM(configPath?: string): Promise<void> {
+  private async _initializeIM(pluginName: string, configPath?: string): Promise<void> {
     try {
-      const cfgPath = configPath ?? getDefaultMattermostConfigPath();
-      const mattermostConfig = loadMattermostConfig(cfgPath);
+      const factory = getIMPluginFactory(pluginName);
+      const cfgPath = configPath ?? factory.getDefaultConfigPath();
 
-      const sessions = this.registry.list();
-      const activeCount = sessions.filter(s => s.status === 'attached' || s.status === 'im_processing').length;
+      this._imPlugin = await factory.load(cfgPath);
 
-      this._imPlugin = await createConnectedMattermostPlugin(cfgPath, {
-        sessionCount: sessions.length,
-        activeCount,
-      });
-
-      // Register message handler: Mattermost → SessionRegistry queue / command handling
+      // Register message handler
       this._imPlugin.onMessage((msg) => {
-        void this._handleIncomingIMMessage(msg, mattermostConfig.channelId);
+        // Use channelId from message, or empty string as fallback
+        void this._handleIncomingIMMessage(msg, msg.channelId ?? '');
       });
 
-      // Initialize CLI plugin
-      const cliPlugin = new ClaudeCodePlugin();
+      // Initialize CLI plugin via registry
+      const cliPlugin = getCLIPlugin('claude-code');
 
       // Initialize worker manager
       this._imWorkerManager = new IMWorkerManager(cliPlugin, this.registry);
@@ -71,19 +68,17 @@ export class Daemon {
         registry: this.registry,
         imPlugin: this._imPlugin,
         imTarget: {
-          plugin: 'mattermost',
-          channelId: mattermostConfig.channelId,
+          plugin: pluginName,
           threadId: '',
         },
-        cliCommand: 'claude',
-        cliArgs: ['--output-format', 'stream-json'],
+        cliPlugin,
         pollIntervalMs: 500,
       });
 
       // Start dispatcher
       this._imDispatcher.start();
 
-      console.log('IM plugin connected and dispatcher started');
+      console.log(`IM plugin '${pluginName}' connected and dispatcher started`);
     } catch (err) {
       console.error(`Failed to initialize IM: ${(err as Error).message}`);
     }
@@ -174,7 +169,7 @@ export class Daemon {
   }
 
   private _renderSessionStatus(session: Session): string {
-    const binding = session.imBindings.find(b => b.plugin === 'mattermost');
+    const binding = session.imBindings[0];
     const pending = session.messageQueue.filter(m => m.status === 'pending').length;
     const lines = [
       `**会话：** \`${session.name}\``,
