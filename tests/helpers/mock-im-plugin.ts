@@ -13,6 +13,8 @@ export class MockIMPlugin implements IMPlugin {
   liveMessages = new Map<string, string>(); // messageId → text content
   liveMessageTargets = new Map<string, MessageTarget>();
   approvalRequests: ApprovalRequest[] = [];
+  failCreateLiveMessage = false;
+  createLiveMessageError = new Error('createLiveMessage failed');
 
   onMessage(handler: (msg: IncomingMessage) => void): void {
     this._handlers.push(handler);
@@ -23,6 +25,7 @@ export class MockIMPlugin implements IMPlugin {
       messageId: uuidv4(),
       plugin: 'mock',
       threadId: partial.threadId,
+      isTopLevel: false,
       userId: partial.userId,
       text: partial.text,
       createdAt: new Date().toISOString(),
@@ -36,6 +39,9 @@ export class MockIMPlugin implements IMPlugin {
   }
 
   async createLiveMessage(target: MessageTarget, content: MessageContent): Promise<string> {
+    if (this.failCreateLiveMessage) {
+      throw this.createLiveMessageError;
+    }
     const msgId = uuidv4();
     const text = content.kind === 'text' ? content.text : content.kind === 'markdown' ? content.markdown : '';
     this.liveMessages.set(msgId, text);

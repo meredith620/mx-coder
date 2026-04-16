@@ -19,6 +19,7 @@ function makeMsg(overrides: Partial<IncomingMessage> = {}): IncomingMessage {
     plugin: 'mattermost',
     channelId: 'ch1',
     threadId: 'thread-1',
+    isTopLevel: false,
     userId: 'user-1',
     text: 'hello',
     createdAt: new Date().toISOString(),
@@ -103,33 +104,110 @@ describe('Daemon IM 路由', () => {
     expect(text).toContain('existing-session');
   });
 
-  test('/open <sessionName> 在目标 thread 发定位消息', async () => {
+  test('/open <sessionName> 在顶层消息中对未绑定 session 创建新 thread', async () => {
     const mockIM = new MockIMPlugin();
     (daemon as any)._imPlugin = mockIM;
 
-    // Create session + bind to a thread
-    daemon.registry.create('my-sess', { workdir: '/tmp', cliPlugin: 'claude-code' });
-    daemon.registry.bindIM('my-sess', { plugin: 'mattermost', threadId: 'target-thread-99' });
+    daemon.registry.create('demo', { workdir: '/tmp', cliPlugin: 'claude-code' });
 
-    const msg = makeMsg({ text: '/open my-sess', threadId: 'requester-thread' });
+    const msg = makeMsg({ text: '/open demo', threadId: 'root-post-1', isTopLevel: true });
     await (daemon as any)._handleIncomingIMMessage(msg, 'ch1');
 
-    // One message to target thread, one ack to requester thread
-    expect(mockIM.sent.length).toBe(2);
+    expect(mockIM.liveMessageTargets.size).toBe(1);
+    const newThreadId = [...mockIM.liveMessageTargets.keys()][0];
+    const liveTarget = mockIM.liveMessageTargets.get(newThreadId)!;
+    expect(liveTarget.threadId).toBe('');
+
+    const binding = daemon.registry.get('demo')!.imBindings.find((item: any) => item.plugin === 'mattermost');
+    expect(binding?.threadId).toBe(newThreadId);
+    expect(binding?.channelId).toBe('ch1');
+
+    expect(mockIM.sent).toHaveLength(1);
+    expect(mockIM.sent[0].target.threadId).toBe('');
+    expect((mockIM.sent[0].content as any).text).toContain('创建独立 thread');
+  });
+
+  test('/open <sessionName> 在顶层消息中对已绑定 session 发送锚点', async () => {
+    const mockIM = new MockIMPlugin();
+    (daemon as any)._imPlugin = mockIM;
+
+    daemon.registry.create('demo', { workdir: '/tmp', cliPlugin: 'claude-code' });
+    daemon.registry.bindIM('demo', { plugin: 'mattermost', threadId: 'target-thread-99', channelId: 'ch1' });
+
+    const msg = makeMsg({ text: '/open demo', threadId: 'root-post-1', isTopLevel: true });
+    await (daemon as any)._handleIncomingIMMessage(msg, 'ch1');
+
+    expect(mockIM.sent).toHaveLength(2);
+    expect(mockIM.sent[0].target.threadId).toBe('target-thread-99');
+    expect(mockIM.sent[1].target.threadId).toBe('');
+    expect((mockIM.sent[1].content as any).text).toContain('发送定位消息');
+  });
+
+  test('/open <sessionName> 在 thread 中对已绑定 session 发送锚点', async () => {
+    const mockIM = new MockIMPlugin();
+    (daemon as any)._imPlugin = mockIM;
+
+    daemon.registry.create('my-sess', { workdir: '/tmp', cliPlugin: 'claude-code' });
+    daemon.registry.bindIM('my-sess', { plugin: 'mattermost', threadId: 'target-thread-99', channelId: 'ch1' });
+
+    const msg = makeMsg({ text: '/open my-sess', threadId: 'requester-thread', isTopLevel: false });
+    await (daemon as any)._handleIncomingIMMessage(msg, 'ch1');
+
+    expect(mockIM.sent).toHaveLength(2);
     const toTarget = mockIM.sent.find(s => s.target.threadId === 'target-thread-99');
     expect(toTarget).toBeTruthy();
     expect((toTarget!.content as any).text).toContain('my-sess');
+
+    const ack = mockIM.sent.find(s => s.target.threadId === 'requester-thread');
+    expect(ack).toBeTruthy();
   });
 
-  test('/open <sessionName> 目标不存在时回复错误', async () => {
+  test('/open <sessionName> 创建 thread 失败时不写入绑定', async () => {
+    const mockIM = new MockIMPlugin();
+    mockIM.failCreateLiveMessage = true;
+    mockIM.createLiveMessageError = new Error('api down');
+    (daemon as any)._imPlugin = mockIM;
+
+    daemon.registry.create('demo', { workdir: '/tmp', cliPlugin: 'claude-code' });
+
+    const msg = makeMsg({ text: '/open demo', threadId: 'root-post-1', isTopLevel: true });
+    await (daemon as any)._handleIncomingIMMessage(msg, 'ch1');
+
+    expect(daemon.registry.get('demo')!.imBindings).toHaveLength(0);
+    expect(mockIM.sent).toHaveLength(1);
+    expect((mockIM.sent[0].content as any).text).toContain('创建 thread 失败');
+  });
+
+  test('/open <sessionName> 并发创建时只绑定一个 thread', async () => {
     const mockIM = new MockIMPlugin();
     (daemon as any)._imPlugin = mockIM;
 
-    const msg = makeMsg({ text: '/open ghost-session', threadId: 'any-thread' });
-    await (daemon as any)._handleIncomingIMMessage(msg, 'ch1');
+    daemon.registry.create('demo', { workdir: '/tmp', cliPlugin: 'claude-code' });
 
-    expect(mockIM.sent.length).toBe(1);
-    expect((mockIM.sent[0].content as any).text).toContain('ghost-session');
+    let releaseCreate!: () => void;
+    const createStarted = new Promise<void>((resolve) => {
+      releaseCreate = resolve;
+    });
+    let calls = 0;
+    mockIM.createLiveMessage = async (target, content) => {
+      calls += 1;
+      if (calls === 1) {
+        await createStarted;
+      }
+      return MockIMPlugin.prototype.createLiveMessage.call(mockIM, target, content);
+    };
+
+    const first = (daemon as any)._handleIncomingIMMessage(makeMsg({ text: '/open demo', threadId: 'root-post-1', isTopLevel: true }), 'ch1');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const second = (daemon as any)._handleIncomingIMMessage(makeMsg({ text: '/open demo', threadId: 'root-post-2', isTopLevel: true, messageId: 'msg-2', dedupeKey: 'dedup-2' }), 'ch1');
+
+    releaseCreate();
+    await Promise.all([first, second]);
+
+    const bindings = daemon.registry.get('demo')!.imBindings.filter((item: any) => item.plugin === 'mattermost');
+    expect(bindings).toHaveLength(1);
+    expect(calls).toBe(2);
+    expect(mockIM.sent.some(s => (s.content as any).text.includes('已被绑定到其他 thread'))).toBe(true);
   });
 
   test('普通消息入队到对应 session', async () => {
