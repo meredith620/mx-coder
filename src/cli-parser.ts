@@ -21,9 +21,14 @@ export function parseCLIArgs(argv: string[]): ParsedCLI {
   const command = cmd as CLICommand;
   const args: Record<string, string | undefined> = {};
 
-  // Parse named flags (--key value)
+  // Parse named flags (--key value or -k value)
   let i = 0;
   const positionals: string[] = [];
+
+  // Short-flag aliases: map single-char flag → canonical long key
+  const SHORT_FLAGS: Record<string, string> = {
+    'w': 'workdir',
+  };
 
   while (i < rest.length) {
     const cur = rest[i];
@@ -32,6 +37,16 @@ export function parseCLIArgs(argv: string[]): ParsedCLI {
       const key = cur.slice(2);
       args[key] = rest[i + 1];
       i += 2;
+    } else if (cur.startsWith('-') && cur.length === 2) {
+      const shortKey = cur.slice(1);
+      const longKey = SHORT_FLAGS[shortKey];
+      if (longKey) {
+        args[longKey] = rest[i + 1];
+        i += 2;
+      } else {
+        positionals.push(cur);
+        i += 1;
+      }
     } else {
       positionals.push(cur);
       i += 1;

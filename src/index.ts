@@ -87,7 +87,7 @@ COMMANDS:
   start                           Start daemon in background
   stop                            Stop the running daemon
   restart                         Restart the daemon
-  create <name> --workdir <path>  Create a new session
+  create <name> [-w|--workdir <path>]  Create a new session
   attach <name>                   Attach to a session
   list                            List all sessions
   status [name]                   Show daemon/session status
@@ -100,7 +100,7 @@ COMMANDS:
 
 EXAMPLES:
   mm-coder start
-  mm-coder create bug-fix --workdir ~/myapp
+  mm-coder create bug-fix -w ~/myapp
   mm-coder attach bug-fix
   mm-coder list
   mm-coder status bug-fix

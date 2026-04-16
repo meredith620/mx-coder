@@ -7,7 +7,7 @@ import { IMWorkerManager } from './im-worker-manager.js';
 import { createConnectedMattermostPlugin, getDefaultMattermostConfigPath, loadMattermostConfig, getMattermostCommandHelpText } from './plugins/im/mattermost.js';
 import { ClaudeCodePlugin } from './plugins/cli/claude-code.js';
 import type { IMPlugin } from './plugins/types.js';
-import type { IncomingMessage, MessageTarget } from './types.js';
+import type { IncomingMessage, MessageTarget, Session } from './types.js';
 import type { AclAction, Actor } from './acl-manager.js';
 import type { ErrorCode } from './ipc/codec.js';
 import { randomUUID } from 'crypto';
@@ -44,9 +44,16 @@ export class Daemon {
 
   private async _initializeIM(configPath?: string): Promise<void> {
     try {
-      const path = configPath ?? getDefaultMattermostConfigPath();
-      const mattermostConfig = loadMattermostConfig(path);
-      this._imPlugin = await createConnectedMattermostPlugin(path);
+      const cfgPath = configPath ?? getDefaultMattermostConfigPath();
+      const mattermostConfig = loadMattermostConfig(cfgPath);
+
+      const sessions = this.registry.list();
+      const activeCount = sessions.filter(s => s.status === 'attached' || s.status === 'im_processing').length;
+
+      this._imPlugin = await createConnectedMattermostPlugin(cfgPath, {
+        sessionCount: sessions.length,
+        activeCount,
+      });
 
       // Register message handler: Mattermost → SessionRegistry queue / command handling
       this._imPlugin.onMessage((msg) => {
@@ -86,6 +93,7 @@ export class Daemon {
     if (!this._imPlugin) return;
 
     const trimmed = msg.text.trim();
+
     if (trimmed === '/help') {
       await this._imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
         kind: 'text',
@@ -102,9 +110,26 @@ export class Daemon {
       return;
     }
 
+    if (trimmed === '/status') {
+      await this._imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+        kind: 'text',
+        text: this._renderIMStatus(msg),
+      });
+      return;
+    }
+
     if (trimmed === '/open' || trimmed.startsWith('/open ')) {
       const sessionName = trimmed === '/open' ? '' : trimmed.slice('/open '.length).trim();
       await this._handleOpenCommand(sessionName, channelId, msg);
+      return;
+    }
+
+    // Prevent creating a session for top-level channel messages that look like unknown commands
+    if (msg.isTopLevel && trimmed.startsWith('/')) {
+      await this._imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+        kind: 'text',
+        text: `未知命令 \`${trimmed.split(' ')[0]}\`。发送 \`/help\` 查看可用命令。`,
+      });
       return;
     }
 
@@ -128,9 +153,51 @@ export class Daemon {
     return {
       plugin: msg.plugin,
       channelId: msg.channelId ?? channelId,
+      // For top-level messages, reply in the same thread as the message (threadId = messageId in Mattermost)
+      // For thread replies, reply into that thread
       threadId: msg.threadId,
       userId: msg.userId,
     };
+  }
+
+  private _renderIMStatus(msg: IncomingMessage): string {
+    const sessions = this.registry.list();
+    // If message is inside a thread, find the bound session
+    if (!msg.isTopLevel) {
+      const session = this.registry.getByIMThread(msg.plugin, msg.threadId);
+      if (session) {
+        return this._renderSessionStatus(session);
+      }
+    }
+    // Global stats (top-level or unbound thread)
+    return this._renderGlobalStatus(sessions);
+  }
+
+  private _renderSessionStatus(session: Session): string {
+    const binding = session.imBindings.find(b => b.plugin === 'mattermost');
+    const pending = session.messageQueue.filter(m => m.status === 'pending').length;
+    const lines = [
+      `**会话：** \`${session.name}\``,
+      `**状态：** ${session.status}`,
+      `**工作目录：** ${session.workdir}`,
+      `**绑定 thread：** ${binding?.threadId ?? '未绑定'}`,
+      `**待处理消息：** ${pending}`,
+      `**创建时间：** ${new Date(session.createdAt).toLocaleString()}`,
+    ];
+    return lines.join('\n');
+  }
+
+  private _renderGlobalStatus(sessions: Session[]): string {
+    const total = sessions.length;
+    const attached = sessions.filter(s => s.status === 'attached').length;
+    const detached = sessions.filter(s => s.status === 'idle').length;
+    const imProcessing = sessions.filter(s => s.status === 'im_processing').length;
+    return [
+      `**mm-coder 全局状态**`,
+      `会话总数：${total}`,
+      `attached：${attached}　im_processing：${imProcessing}　idle：${detached}`,
+      total > 0 ? '\n发送 `/list` 查看详细列表，`/open <name>` 定位到对应 thread。' : '\n直接发送消息即可创建新会话。',
+    ].join('\n');
   }
 
   private _getOrCreateSessionForThread(threadId: string, plugin: string) {

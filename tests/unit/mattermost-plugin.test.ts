@@ -50,10 +50,9 @@ describe('Mattermost config loader', () => {
   });
 
   test('欢迎文案包含 bot 名称和帮助信息', () => {
-    const text = getMattermostWelcomeText('bot-user');
+    const text = getMattermostWelcomeText('bot-user', 3, 1);
     expect(text).toContain('bot-user');
     expect(text).toContain('/help');
-    expect(text).toContain('/list');
   });
 
   test('支持顶层配置结构', () => {
@@ -136,7 +135,6 @@ describe('Mattermost config loader', () => {
     const [, welcomeOpts] = fetchMock.mock.calls[1];
     const welcomeBody = JSON.parse(welcomeOpts.body);
     expect(welcomeBody.message).toContain('/help');
-    expect(welcomeBody.message).toContain('/list');
   });
 });
 

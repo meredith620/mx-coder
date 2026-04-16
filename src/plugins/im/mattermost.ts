@@ -102,30 +102,34 @@ export function loadMattermostConfig(configPath = getDefaultMattermostConfigPath
 
 export function getMattermostCommandHelpText(): string {
   return [
-    '可用普通消息命令：',
-    '- /help：显示帮助',
-    '- /list：列出当前 mm-coder 会话',
-    '- /open <sessionName>：在对应 thread 中发送定位消息',
+    '**mm-coder 可用命令**（直接发送普通消息）：',
     '',
-    '直接发送其他文本即可让 mm-coder 处理。',
-    '注意：这些是发给 mm-coder 的普通消息，不是 Mattermost slash command。',
+    '`/help` — 显示本帮助',
+    '`/list` — 列出所有 mm-coder session 及绑定 thread',
+    '`/open <sessionName>` — 在 session 对应的 thread 中发送定位消息',
+    '`/status` — 显示当前 session 状态（在 thread 中）或全局统计（在主频道）',
+    '',
+    '其他文本消息将发送给当前 thread 对应的 Claude 会话处理。',
   ].join('\n');
 }
 
-export function getMattermostWelcomeText(username: string): string {
+export function getMattermostWelcomeText(username: string, sessionCount: number, activeCount: number): string {
   return [
-    `mm-coder 已连接（bot: ${username}）`,
-    '',
-    getMattermostCommandHelpText(),
+    `**mm-coder** 已连接 (\`${username}\`)`,
+    `当前会话：${sessionCount} 个，活跃中：${activeCount} 个`,
+    '发送 `/help` 查看可用命令。',
   ].join('\n');
 }
 
 /**
  * Convenience helper: load config file, create plugin, connect and validate token.
  */
-export async function createConnectedMattermostPlugin(configPath?: string): Promise<MattermostPlugin> {
+export async function createConnectedMattermostPlugin(
+  configPath?: string,
+  connectOpts: { sessionCount?: number; activeCount?: number } = {},
+): Promise<MattermostPlugin> {
   const plugin = new MattermostPlugin(loadMattermostConfig(configPath));
-  await plugin.connect();
+  await plugin.connect(connectOpts);
   return plugin;
 }
 
@@ -172,7 +176,7 @@ export class MattermostPlugin implements IMPlugin {
    * Validate token by fetching /api/v4/users/me, then start WebSocket listener.
    * Throws if token is invalid or server unreachable.
    */
-  async connect(): Promise<void> {
+  async connect(opts: { sessionCount?: number; activeCount?: number } = {}): Promise<void> {
     const me = await this._apiGet<{ id: string; username: string }>('/api/v4/users/me');
     this._botUserId = me.id;
     this._stopped = false;
@@ -181,7 +185,7 @@ export class MattermostPlugin implements IMPlugin {
     // Send welcome message
     await this.sendMessage(
       { plugin: 'mattermost', channelId: this._config.channelId, threadId: '' },
-      { kind: 'text', text: getMattermostWelcomeText(me.username) },
+      { kind: 'text', text: getMattermostWelcomeText(me.username, opts.sessionCount ?? 0, opts.activeCount ?? 0) },
     );
   }
 
@@ -318,6 +322,7 @@ export class MattermostPlugin implements IMPlugin {
       plugin: 'mattermost',
       channelId: channelId,
       threadId: (post.root_id as string | undefined) || (post.id as string),
+      isTopLevel: !(post.root_id as string | undefined),
       userId: post.user_id as string,
       text: post.message as string,
       createdAt: new Date(Number(post.create_at)).toISOString(),

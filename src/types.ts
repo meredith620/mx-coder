@@ -93,6 +93,8 @@ export interface IncomingMessage {
   plugin: string;
   channelId?: string;
   threadId: string;
+  /** True when the message is a top-level channel post (not inside a thread) */
+  isTopLevel: boolean;
   userId: string;
   text: string;
   createdAt: string;
@@ -141,16 +143,9 @@ export interface PermissionConfig {
 }
 
 export interface IMConfigGuide {
-  plugin: 'mattermost';
+  plugin: string;
   configPath: string;
-  example: {
-    mattermost: {
-      url: string;
-      token: string;
-      channelId: string;
-      reconnectIntervalMs: number;
-    };
-  };
+  example: Record<string, unknown>;
 }
 
 // CLIEvent types (stream-json output from claude -p)

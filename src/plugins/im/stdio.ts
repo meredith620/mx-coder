@@ -40,6 +40,7 @@ export class StdioIMPlugin implements IMPlugin {
             messageId: String(msg.messageId ?? ''),
             plugin: 'stdio',
             threadId: String(msg.threadId ?? ''),
+            isTopLevel: !msg.threadId || msg.threadId === msg.messageId,
             userId: String(msg.userId ?? ''),
             text: String(msg.text ?? ''),
             createdAt: String(msg.createdAt ?? new Date().toISOString()),
