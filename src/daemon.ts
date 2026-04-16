@@ -148,9 +148,9 @@ export class Daemon {
     return {
       plugin: msg.plugin,
       channelId: msg.channelId ?? channelId,
-      // For top-level messages, reply in the same thread as the message (threadId = messageId in Mattermost)
-      // For thread replies, reply into that thread
-      threadId: msg.threadId,
+      // For top-level messages (channel root posts), reply to the channel itself (empty threadId).
+      // For thread replies, reply into that thread.
+      threadId: msg.isTopLevel ? '' : msg.threadId,
       userId: msg.userId,
     };
   }
