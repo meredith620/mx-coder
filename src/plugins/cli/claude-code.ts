@@ -49,19 +49,7 @@ export class ClaudeCodePlugin implements CLIPlugin {
         '--input-format', 'stream-json',
         '--output-format', 'stream-json',
         '--verbose',
-        '--permission-prompt-tool', `mcp__mm-coder-bridge__permission_prompt:${bridgeScriptPath}`,
-      ],
-    };
-  }
-
-  buildIMMessageCommand(session: Session, prompt: string): CommandSpec {
-    return {
-      command: 'claude',
-      args: [
-        '-p', prompt,
-        ...this._resumeArgs(session),
-        '--output-format', 'stream-json',
-        '--verbose',
+        '--permission-prompt-tool', `node ${bridgeScriptPath}`,
       ],
     };
   }

@@ -1,9 +1,10 @@
-import { spawn } from 'child_process';
 import * as readline from 'readline';
+import type { ChildProcess } from 'child_process';
 import type { SessionRegistry } from './session-registry.js';
-import type { IMPlugin, CLIPlugin } from './plugins/types.js';
+import type { IMPlugin } from './plugins/types.js';
 import type { MessageTarget, QueuedMessage, Session } from './types.js';
 import { StreamToIM } from './stream-to-im.js';
+import { IMWorkerManager } from './im-worker-manager.js';
 
 function debugLog(payload: Record<string, unknown>): void {
   try {
@@ -13,27 +14,35 @@ function debugLog(payload: Record<string, unknown>): void {
   }
 }
 
+interface ActiveTurn {
+  messageId: string;
+  streamToIM: StreamToIM;
+  resolve: () => void;
+  reject: (error: Error) => void;
+}
+
 export interface IMMessageDispatcherOptions {
   registry: SessionRegistry;
   imPlugin: IMPlugin;
   imPluginResolver?: (message: QueuedMessage, session: Session) => IMPlugin;
   imTarget: MessageTarget;
-  cliPlugin?: CLIPlugin;
-  cliPluginResolver?: (session: Session) => CLIPlugin;
+  workerManager: IMWorkerManager;
   pollIntervalMs?: number;
   maxRetries?: number;
   onSessionImDone?: (sessionName: string) => void;
 }
 
 /**
- * Polls the session registry for pending IM messages, spawns the CLI for each,
- * pipes stdout through StreamToIM, and updates the IM plugin with the response.
+ * Polls the session registry for pending IM messages and feeds them into
+ * the resident worker one-by-one per session.
  */
 export class IMMessageDispatcher {
   private _opts: IMMessageDispatcherOptions;
   private _running = false;
   private _timer: ReturnType<typeof setTimeout> | null = null;
-  private _processing = new Set<string>(); // sessionName:messageId
+  private _processingSessions = new Set<string>();
+  private _streamLoops = new Map<string, Promise<void>>();
+  private _activeTurns = new Map<string, ActiveTurn>();
 
   constructor(opts: IMMessageDispatcherOptions) {
     this._opts = opts;
@@ -64,26 +73,30 @@ export class IMMessageDispatcher {
   private async _tick(): Promise<void> {
     const sessions = this._opts.registry.list();
     for (const session of sessions) {
-      if (session.status !== 'idle' && session.status !== 'im_processing') {
+      if (session.status !== 'idle') {
         continue;
       }
-      const pending = session.messageQueue.filter(m => m.status === 'pending');
-      for (const msg of pending) {
-        const key = `${session.name}:${msg.messageId}`;
-        if (this._processing.has(key)) continue;
-        this._processing.add(key);
-        void this._processMessage(session.name, msg.messageId).finally(() => {
-          this._processing.delete(key);
-        });
+      if (session.runtimeState !== 'cold' && session.runtimeState !== 'ready') {
+        continue;
       }
+      if (this._processingSessions.has(session.name)) {
+        continue;
+      }
+      const pending = session.messageQueue.find(m => m.status === 'pending');
+      if (!pending) continue;
+
+      this._processingSessions.add(session.name);
+      void this._processNextMessage(session.name).finally(() => {
+        this._processingSessions.delete(session.name);
+      });
     }
   }
 
-  private _getSessionAndMessage(sessionName: string, messageId: string): { session: Session; message: QueuedMessage } {
+  private _getNextPendingMessage(sessionName: string): { session: Session; message: QueuedMessage } | null {
     const session = this._opts.registry.get(sessionName);
-    if (!session) throw new Error(`Session not found: ${sessionName}`);
-    const message = session.messageQueue.find(m => m.messageId === messageId);
-    if (!message) throw new Error(`Queued message not found: ${messageId}`);
+    if (!session) return null;
+    const message = session.messageQueue.find(m => m.status === 'pending');
+    if (!message) return null;
     return { session, message };
   }
 
@@ -100,16 +113,6 @@ export class IMMessageDispatcher {
     };
   }
 
-  private _resolveCLIPlugin(session: Session): CLIPlugin {
-    if (this._opts.cliPluginResolver) {
-      return this._opts.cliPluginResolver(session);
-    }
-    if (this._opts.cliPlugin) {
-      return this._opts.cliPlugin;
-    }
-    throw new Error('IMMessageDispatcher requires cliPlugin or cliPluginResolver');
-  }
-
   private _resolveIMPlugin(message: QueuedMessage, session: Session): IMPlugin {
     if (this._opts.imPluginResolver) {
       return this._opts.imPluginResolver(message, session);
@@ -117,106 +120,145 @@ export class IMMessageDispatcher {
     return this._opts.imPlugin;
   }
 
-  private _buildCLICommand(session: Session, message: QueuedMessage) {
-    return this._resolveCLIPlugin(session).buildIMMessageCommand(session, message.content);
+  private _markMessageStatus(sessionName: string, messageId: string, status: QueuedMessage['status']): void {
+    const session = this._opts.registry.get(sessionName);
+    if (!session) return;
+    const message = session.messageQueue.find(m => m.messageId === messageId);
+    if (message) {
+      message.status = status;
+    }
   }
 
-  private async _processMessage(sessionName: string, messageId: string, attempt = 0): Promise<void> {
-    const maxRetries = this._opts.maxRetries ?? 1;
-    const registry = this._opts.registry;
-    const { session, message } = this._getSessionAndMessage(sessionName, messageId);
+  private _normalizeEvent(event: Record<string, unknown>): Record<string, unknown> {
+    if ('payload' in event) {
+      return event;
+    }
+    if ('message' in event) {
+      return { ...event, payload: event.message };
+    }
+    return event;
+  }
+
+  private _notifyActiveTurn(sessionName: string, line: string): Promise<void> {
+    const activeTurn = this._activeTurns.get(sessionName);
+    if (!activeTurn) {
+      return Promise.resolve();
+    }
+
+    try {
+      const rawEvent = JSON.parse(line) as Record<string, unknown>;
+      const event = this._normalizeEvent(rawEvent);
+      return activeTurn.streamToIM.onEvent(event as Parameters<typeof activeTurn.streamToIM.onEvent>[0]).then(() => {
+        if (event.type === 'result' || event.type === 'error') {
+          this._activeTurns.delete(sessionName);
+          activeTurn.resolve();
+        }
+      });
+    } catch {
+      debugLog({ event: 'stdout_non_json', sessionName, line });
+      return Promise.resolve();
+    }
+  }
+
+  private _ensureStreamLoop(sessionName: string, proc: ChildProcess): void {
+    if (this._streamLoops.has(sessionName)) {
+      return;
+    }
+
+    const loop = (async () => {
+      const stdout = proc.stdout;
+      if (!stdout) return;
+      const rl = readline.createInterface({ input: stdout, crlfDelay: Infinity });
+      for await (const line of rl) {
+        if (!line.trim()) continue;
+        debugLog({ event: 'stdout_line', sessionName, line });
+        await this._notifyActiveTurn(sessionName, line);
+      }
+    })().finally(() => {
+      const activeTurn = this._activeTurns.get(sessionName);
+      if (activeTurn) {
+        this._activeTurns.delete(sessionName);
+        activeTurn.reject(new Error(`Worker stream closed before result for ${sessionName}`));
+      }
+      this._streamLoops.delete(sessionName);
+    });
+
+    this._streamLoops.set(sessionName, loop);
+  }
+
+  private async _processNextMessage(sessionName: string): Promise<void> {
+    const next = this._getNextPendingMessage(sessionName);
+    if (!next) return;
+
+    const { session, message } = next;
     const streamToIM = new StreamToIM(this._resolveIMPlugin(message, session), this._buildTarget(message));
     const wasUninitialized = session.initState === 'uninitialized';
-
-    let finalStatus: QueuedMessage['status'] = 'failed';
-    let currentAttempt = attempt;
 
     debugLog({
       event: 'process_start',
       sessionName,
-      messageId,
+      messageId: message.messageId,
       threadId: message.threadId,
       channelId: message.channelId,
-      attempt: currentAttempt,
       content: message.content,
     });
 
-    // Update session status to im_processing
-    try {
-      registry.markImProcessing(sessionName);
-    } catch { /* session may not exist or invalid transition */ }
+    let turnResolved = false;
+    const turnDone = new Promise<void>((resolve, reject) => {
+      this._activeTurns.set(sessionName, {
+        messageId: message.messageId,
+        streamToIM,
+        resolve: () => {
+          turnResolved = true;
+          resolve();
+        },
+        reject: (error) => {
+          turnResolved = true;
+          reject(error);
+        },
+      });
+    });
 
     try {
-      while (currentAttempt <= maxRetries) {
-        try {
-          const exitCode = await new Promise<number>((resolve) => {
-            const cmdSpec = this._buildCLICommand(session, message);
-            debugLog({ event: 'spawn_cli', sessionName, messageId, command: cmdSpec.command, args: cmdSpec.args, workdir: session.workdir });
-            const proc = spawn(cmdSpec.command, cmdSpec.args, {
-              stdio: ['pipe', 'pipe', 'pipe'],
-              cwd: session.workdir,
-            });
+      this._markMessageStatus(sessionName, message.messageId, 'running');
+      this._opts.registry.markImProcessing(sessionName);
+      await this._opts.workerManager.ensureRunning(sessionName);
 
-            const rl = readline.createInterface({ input: proc.stdout!, crlfDelay: Infinity });
-            rl.on('line', (line) => {
-              if (!line.trim()) return;
-              debugLog({ event: 'stdout_line', sessionName, messageId, line });
-              try {
-                const event = JSON.parse(line) as { type: string; payload: unknown };
-                void streamToIM.onEvent(event as Parameters<typeof streamToIM.onEvent>[0]);
-              } catch {
-                debugLog({ event: 'stdout_non_json', sessionName, messageId, line });
-              }
-            });
-
-            const stderrRl = readline.createInterface({ input: proc.stderr!, crlfDelay: Infinity });
-            stderrRl.on('line', (line) => {
-              if (!line.trim()) return;
-              debugLog({ event: 'stderr_line', sessionName, messageId, line });
-            });
-
-            proc.on('close', (code) => resolve(code ?? 0));
-            proc.on('error', (err) => {
-              debugLog({ event: 'spawn_error', sessionName, messageId, error: err.message });
-              resolve(1);
-            });
-          });
-
-          debugLog({ event: 'process_exit', sessionName, messageId, exitCode });
-
-          if (exitCode === 0) {
-            finalStatus = 'completed';
-            // 首次运行成功后标记为 initialized，后续使用 --resume
-            if (wasUninitialized) {
-              try { registry.updateSessionId(sessionName, session.sessionId); } catch { /* best-effort */ }
-            }
-            break;
-          }
-        } catch {
-          // handled by retry branch below
-        }
-
-        if (currentAttempt < maxRetries) {
-          currentAttempt += 1;
-          await new Promise(resolve => setTimeout(resolve, 200));
-          continue;
-        }
-
-        finalStatus = 'failed';
-        break;
+      const proc = this._opts.workerManager.getProcess(sessionName);
+      if (!proc) {
+        throw new Error(`Worker process missing for session ${sessionName}`);
       }
+
+      this._ensureStreamLoop(sessionName, proc);
+      await this._opts.workerManager.sendMessage(sessionName, message.content);
+      await turnDone;
+      this._markMessageStatus(sessionName, message.messageId, 'completed');
+
+      if (wasUninitialized) {
+        try { this._opts.registry.updateSessionId(sessionName, session.sessionId); } catch {}
+      }
+    } catch (err) {
+      this._markMessageStatus(sessionName, message.messageId, 'failed');
+      debugLog({ event: 'process_failed', sessionName, messageId: message.messageId, error: (err as Error).message });
     } finally {
-      const current = registry.get(sessionName);
-      if (current) {
-        const currentMessage = current.messageQueue.find(m => m.messageId === messageId);
-        if (currentMessage) currentMessage.status = finalStatus;
+      const activeTurn = this._activeTurns.get(sessionName);
+      if (activeTurn?.messageId === message.messageId) {
+        this._activeTurns.delete(sessionName);
+      }
+      if (!turnResolved) {
+        debugLog({ event: 'turn_incomplete', sessionName, messageId: message.messageId });
       }
       try {
-        registry.markImDone(sessionName);
-        debugLog({ event: 'mark_im_done', sessionName, messageId, finalStatus, sessionStatus: registry.get(sessionName)?.status });
+        this._opts.registry.markImDone(sessionName);
+        debugLog({ event: 'mark_im_done', sessionName, messageId: message.messageId, sessionStatus: this._opts.registry.get(sessionName)?.status });
         this._opts.onSessionImDone?.(sessionName);
       } catch (err) {
-        debugLog({ event: 'mark_im_done_failed', sessionName, messageId, error: (err as Error).message });
+        debugLog({ event: 'mark_im_done_failed', sessionName, messageId: message.messageId, error: (err as Error).message });
+      }
+
+      const remaining = this._getNextPendingMessage(sessionName);
+      if (this._running && remaining) {
+        await this._processNextMessage(sessionName);
       }
     }
   }

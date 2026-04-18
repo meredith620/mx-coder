@@ -1,6 +1,6 @@
 // Core domain types for mm-coder
 
-export type RuntimeState = 'idle' | 'running' | 'waiting_approval' | 'attached_terminal' | 'takeover_pending';
+export type RuntimeState = 'cold' | 'ready' | 'running' | 'waiting_approval' | 'attached_terminal' | 'takeover_pending' | 'recovering' | 'error';
 
 export type SessionStatus =
   | 'idle'

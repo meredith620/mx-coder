@@ -14,6 +14,7 @@ export class IMWorkerManager {
   private _registry: SessionRegistry;
   private _processes = new Map<string, ChildProcess>();
   private _restartTimers = new Map<string, NodeJS.Timeout>();
+  private _spawnPromises = new Map<string, Promise<void>>();
 
   constructor(pluginResolver: CLIPluginResolver, registry: SessionRegistry) {
     this._pluginResolver = pluginResolver;
@@ -29,67 +30,99 @@ export class IMWorkerManager {
   async spawn(session: Session): Promise<void> {
     const name = session.name;
 
-    // Increment spawnGeneration atomically
-    const currentGeneration = session.spawnGeneration + 1;
-    this._registry['_sessions'].get(name)!.spawnGeneration = currentGeneration;
-
-    // Terminate any existing worker (stale from previous generation)
-    const existingProc = this._processes.get(name);
-    if (existingProc) {
-      existingProc.kill('SIGKILL');
-      this._processes.delete(name);
+    const existingSpawn = this._spawnPromises.get(name);
+    if (existingSpawn) {
+      return existingSpawn;
     }
 
-    // Build command
-    const bridgePath = `/tmp/mm-coder-mcp-bridge-${session.sessionId}.js`;
-    const { command, args } = this._resolvePlugin(session).buildIMWorkerCommand(session, bridgePath);
+    const spawnPromise = (async () => {
+      const nextGeneration = session.spawnGeneration + 1;
+      this._registry['_sessions'].get(name)!.spawnGeneration = nextGeneration;
 
-    // Spawn process
-    const proc = spawn(command, args, {
-      cwd: session.workdir,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    const pid = proc.pid!;
-
-    // Register as active worker
-    this._processes.set(name, proc);
-    this._registry['_sessions'].get(name)!.imWorkerPid = pid;
-
-    // Handle process exit
-    proc.on('exit', (code) => {
-      this._processes.delete(name);
-      const s = this._registry.get(name);
-      if (!s) return;
-
-      this._registry['_sessions'].get(name)!.imWorkerPid = null;
-
-      if (code !== 0 && code !== null) {
-        // Crash detected
-        this._handleCrash(name);
+      const existingProc = this._processes.get(name);
+      if (existingProc) {
+        existingProc.kill('SIGKILL');
+        this._processes.delete(name);
       }
-    });
+
+      const bridgePath = `/tmp/mm-coder-mcp-bridge-${session.sessionId}.js`;
+      const { command, args } = this._resolvePlugin(session).buildIMWorkerCommand(session, bridgePath);
+      const proc = spawn(command, args, {
+        cwd: session.workdir,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      const pid = proc.pid!;
+      this._processes.set(name, proc);
+
+      const currentSession = this._registry.get(name);
+      if (!currentSession || currentSession.spawnGeneration !== nextGeneration) {
+        proc.kill('SIGKILL');
+        this._processes.delete(name);
+        return;
+      }
+
+      this._registry.markWorkerReady(name, pid);
+
+      proc.on('exit', (code) => {
+        const active = this._processes.get(name);
+        if (active === proc) {
+          this._processes.delete(name);
+        }
+
+        const s = this._registry.get(name);
+        if (!s || s.imWorkerPid !== pid) return;
+
+        if (code !== 0 && code !== null) {
+          this._registry.markRecovering(name);
+          this._registry['_sessions'].get(name)!.imWorkerPid = null;
+          this._handleCrash(name);
+          return;
+        }
+
+        this._registry.markWorkerStopped(name);
+      });
+    })();
+
+    this._spawnPromises.set(name, spawnPromise);
+    try {
+      await spawnPromise;
+    } finally {
+      this._spawnPromises.delete(name);
+    }
   }
 
-  terminate(name: string, signal: NodeJS.Signals = 'SIGTERM'): void {
+  async ensureRunning(name: string): Promise<void> {
+    const session = this._registry.get(name);
+    if (!session) throw new Error('SESSION_NOT_FOUND');
+
+    if (this._processes.has(name) && session.imWorkerPid && this.isAlive(name)) {
+      return;
+    }
+
+    await this.spawn(session);
+  }
+
+  async terminate(name: string, signal: NodeJS.Signals = 'SIGTERM'): Promise<void> {
     const proc = this._processes.get(name);
     if (proc) {
       proc.kill(signal);
       this._processes.delete(name);
     }
 
-    // Clear any pending restart timer
     const timer = this._restartTimers.get(name);
     if (timer) {
       clearTimeout(timer);
       this._restartTimers.delete(name);
     }
 
-    // Clear PID from registry
-    const session = this._registry.get(name);
-    if (session) {
-      this._registry['_sessions'].get(name)!.imWorkerPid = null;
+    if (this._registry.get(name)) {
+      this._registry.markWorkerStopped(name);
     }
+  }
+
+  getProcess(name: string): ChildProcess | undefined {
+    return this._processes.get(name);
   }
 
   isAlive(name: string): boolean {
@@ -104,25 +137,26 @@ export class IMWorkerManager {
     }
   }
 
-  resetCrashCountOnSuccess(name: string, correlationId: string): void {
+  resetCrashCountOnSuccess(name: string, _correlationId: string): void {
     const session = this._registry.get(name);
     if (session) {
       this._registry['_sessions'].get(name)!.imWorkerCrashCount = 0;
     }
   }
 
-  /** 向 IM worker stdin 写入 user 消息（JSONL 格式）；懒启动：若 worker 不存在则先 spawn */
   async sendMessage(name: string, text: string): Promise<void> {
     const session = this._registry.get(name);
     if (!session) throw new Error('SESSION_NOT_FOUND');
 
-    // 懒启动
-    if (!this._processes.has(name)) {
-      await this.spawn(session);
-    }
+    await this.ensureRunning(name);
 
     const proc = this._processes.get(name);
     if (!proc?.stdin) return;
+
+    const stdin = proc.stdin as Writable;
+    if (stdin.writableEnded || stdin.destroyed) {
+      throw new Error(`IM worker stdin unavailable for session ${name}`);
+    }
 
     const payload = JSON.stringify({
       type: 'user',
@@ -132,22 +166,44 @@ export class IMWorkerManager {
       },
     });
 
-    await new Promise<void>((resolve, reject) => {
-      (proc.stdin as Writable).write(payload + '\n', (err) => {
-        if (err) reject(err);
-        else resolve();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        if (proc.exitCode !== null) {
+          reject(new Error(`IM worker exited before write for session ${name}`));
+          return;
+        }
+
+        const onError = (err: Error & { code?: string }) => {
+          stdin.off('error', onError);
+          reject(err.code === 'EPIPE' ? new Error(`IM worker pipe closed for session ${name}`) : err);
+        };
+
+        stdin.once('error', onError);
+        try {
+          stdin.write(payload + '\n', (err) => {
+            stdin.off('error', onError);
+            if (err) {
+              const typedErr = err as Error & { code?: string };
+              reject(typedErr.code === 'EPIPE' ? new Error(`IM worker pipe closed for session ${name}`) : typedErr);
+            } else {
+              resolve();
+            }
+          });
+        } catch (err) {
+          stdin.off('error', onError);
+          reject(err instanceof Error ? err : new Error(String(err)));
+        }
       });
-    });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EPIPE') {
+        throw new Error(`IM worker pipe closed for session ${name}`);
+      }
+      throw err;
+    }
   }
 
-  /** pre-warm 钩子：attach 退出后立即启动 IM worker */
   async onDetach(name: string): Promise<void> {
-    const session = this._registry.get(name);
-    if (!session) return;
-
-    if (!this._processes.has(name)) {
-      await this.spawn(session);
-    }
+    await this.ensureRunning(name);
   }
 
   private _handleCrash(name: string): void {
@@ -158,12 +214,10 @@ export class IMWorkerManager {
     this._registry['_sessions'].get(name)!.imWorkerCrashCount = crashCount;
 
     if (crashCount >= MAX_CRASH_COUNT) {
-      // Max crashes exceeded - mark as error
       this._registry.markError(name, 'IM worker crashed too many times');
       return;
     }
 
-    // Schedule restart with backoff
     const delay = RESTART_DELAYS[crashCount - 1] || RESTART_DELAYS[RESTART_DELAYS.length - 1];
     const timer = setTimeout(async () => {
       this._restartTimers.delete(name);

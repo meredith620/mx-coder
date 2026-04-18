@@ -8,8 +8,15 @@ export interface CommandSpec {
 export interface CLIPlugin {
   buildAttachCommand(session: Session): CommandSpec;
   buildIMWorkerCommand(session: Session, bridgeScriptPath: string): CommandSpec;
-  buildIMMessageCommand(session: Session, prompt: string): CommandSpec;
   generateSessionId(): string;
+}
+
+export interface LegacyIMMessageCLIPlugin extends CLIPlugin {
+  buildIMMessageCommand(session: Session, prompt: string): CommandSpec;
+}
+
+export function hasLegacyIMMessageCommand(plugin: CLIPlugin): plugin is LegacyIMMessageCLIPlugin {
+  return 'buildIMMessageCommand' in plugin && typeof (plugin as LegacyIMMessageCLIPlugin).buildIMMessageCommand === 'function';
 }
 
 export interface IMPlugin {
