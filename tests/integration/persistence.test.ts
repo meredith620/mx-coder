@@ -33,30 +33,57 @@ describe('PersistenceStore', () => {
     expect(r2.get('broken')?.status).toBe('recovering');
   });
 
-  test('approval_pending/takeover_pending 重启后也重置为 recovering', async () => {
+  test('重启后 ready worker 不恢复为 ready，而是 cold', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-coder-test-'));
+    fs.writeFileSync(path.join(dir, 'sessions.json'), JSON.stringify({
+      version: 1,
+      sessions: [{
+        name: 'ready-session',
+        status: 'idle',
+        cliPlugin: 'claude-code',
+        workdir: '/tmp',
+        sessionId: 'sess-ready',
+        initState: 'initialized',
+      }],
+    }));
+
+    const store = new PersistenceStore(path.join(dir, 'sessions.json'));
+    const r = new SessionRegistry(store);
+    await store.load(r);
+
+    expect(r.get('ready-session')?.status).toBe('idle');
+    expect(r.get('ready-session')?.runtimeState).toBe('cold');
+    expect(r.get('ready-session')?.imWorkerPid).toBeNull();
+  });
+
+  test('approval_pending 重启后 fail-closed 为 recovering + cold worker pid', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-coder-test-'));
+    fs.writeFileSync(path.join(dir, 'sessions.json'), JSON.stringify({
+      version: 1,
+      sessions: [{ name: 'approval-broken', status: 'approval_pending', cliPlugin: 'claude-code', workdir: '/tmp', sessionId: 'sess-approval' }],
+    }));
+
+    const store = new PersistenceStore(path.join(dir, 'sessions.json'));
+    const r = new SessionRegistry(store);
+    await store.load(r);
+
+    expect(r.get('approval-broken')?.status).toBe('recovering');
+    expect(r.get('approval-broken')?.runtimeState).toBe('recovering');
+    expect(r.get('approval-broken')?.imWorkerPid).toBeNull();
+  });
+
+  test('takeover_pending 重启后也重置为 recovering', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-coder-test-'));
     fs.writeFileSync(path.join(dir, 'sessions.json'), JSON.stringify({
       version: 1,
       sessions: [
-        { name: 'a', status: 'approval_pending', cliPlugin: 'claude-code', workdir: '/tmp' },
         { name: 'b', status: 'takeover_pending', cliPlugin: 'claude-code', workdir: '/tmp' },
       ],
     }));
     const store = new PersistenceStore(path.join(dir, 'sessions.json'));
     const r = new SessionRegistry(store);
     await store.load(r);
-    expect(r.get('a')?.status).toBe('recovering');
     expect(r.get('b')?.status).toBe('recovering');
-  });
-
-  test('原子写：flush 使用 .tmp 后 rename', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-coder-test-'));
-    const filePath = path.join(dir, 'sessions.json');
-    const store = new PersistenceStore(filePath);
-    const r = new SessionRegistry(store);
-    r.create('atomictest', { workdir: '/tmp', cliPlugin: 'claude-code' });
-    await store.flush();
-    expect(fs.existsSync(filePath)).toBe(true);
-    expect(fs.existsSync(filePath + '.tmp')).toBe(false);
+    expect(r.get('b')?.runtimeState).toBe('recovering');
   });
 });

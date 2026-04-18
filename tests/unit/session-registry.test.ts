@@ -11,12 +11,90 @@ describe('SessionRegistry', () => {
       .toThrow('SESSION_ALREADY_EXISTS');
   });
 
+  test('新建 session 默认为 status=idle, runtimeState=cold', () => {
+    registry.create('s0', { workdir: '/tmp', cliPlugin: 'claude-code' });
+    const s = registry.get('s0')!;
+    expect(s.status).toBe('idle');
+    expect(s.runtimeState).toBe('cold');
+  });
+
   test('markAttached 更新 pid 和状态', () => {
     registry.create('s1', { workdir: '/tmp', cliPlugin: 'claude-code' });
     registry.markAttached('s1', 1234);
     const s = registry.get('s1')!;
     expect(s.status).toBe('attached');
     expect(s.attachedPid).toBe(1234);
+    expect(s.runtimeState).toBe('attached_terminal');
+  });
+
+  test('worker 已就绪但未执行消息时保持 status=idle, runtimeState=ready', () => {
+    registry.create('s-ready', { workdir: '/tmp', cliPlugin: 'claude-code' });
+    const s = registry.get('s-ready')!;
+    s.imWorkerPid = 4321;
+    s.runtimeState = 'ready';
+
+    expect(s.status).toBe('idle');
+    expect(s.runtimeState).toBe('ready');
+  });
+
+  test('markImProcessing 后为 status=im_processing, runtimeState=running', () => {
+    registry.create('s-running', { workdir: '/tmp', cliPlugin: 'claude-code' });
+    registry.markImProcessing('s-running', 2001);
+    const s = registry.get('s-running')!;
+
+    expect(s.status).toBe('im_processing');
+    expect(s.runtimeState).toBe('running');
+    expect(s.imWorkerPid).toBe(2001);
+  });
+
+  test('approval_pending 对应 runtimeState=waiting_approval', () => {
+    registry.create('s-approval', { workdir: '/tmp', cliPlugin: 'claude-code' });
+    registry.markImProcessing('s-approval', 2002);
+    registry['_sessions'].get('s-approval')!.imWorkerPid = 2002;
+    registry['_sessions'].get('s-approval')!.status = 'im_processing';
+    registry['_sessions'].get('s-approval')!.runtimeState = 'running';
+    registry['_applyTransition' as keyof SessionRegistry]?.call?.(registry, registry.get('s-approval'), 'tool_permission_required');
+    const s = registry.get('s-approval')!;
+
+    expect(s.status).toBe('approval_pending');
+    expect(s.runtimeState).toBe('waiting_approval');
+  });
+
+  test('markImDone 后保留 worker 时回到 status=idle, runtimeState=ready', () => {
+    registry.create('s-ready-done', { workdir: '/tmp', cliPlugin: 'claude-code' });
+    registry.markImProcessing('s-ready-done', 5001);
+    registry.markImDone('s-ready-done');
+    const s = registry.get('s-ready-done')!;
+
+    expect(s.status).toBe('idle');
+    expect(s.runtimeState).toBe('ready');
+    expect(s.imWorkerPid).toBe(5001);
+  });
+
+  test('markAttachPending 在 worker ready 时保持 attach_pending + ready', () => {
+    registry.create('s-attach-pending-transition', { workdir: '/tmp', cliPlugin: 'claude-code' });
+    const s = registry.get('s-attach-pending-transition')!;
+    s.imWorkerPid = 5002;
+    s.runtimeState = 'ready';
+
+    registry.markAttachPending('s-attach-pending-transition');
+
+    expect(s.status).toBe('attach_pending');
+    expect(s.runtimeState).toBe('ready');
+    expect(s.imWorkerPid).toBe(5002);
+  });
+
+  test('markAttachPending 在 approval_pending 时进入 attach_pending + waiting_approval', () => {
+    registry.create('s-attach-from-approval', { workdir: '/tmp', cliPlugin: 'claude-code' });
+    registry.markImProcessing('s-attach-from-approval', 5003);
+    registry['_applyTransition' as keyof SessionRegistry]?.call?.(registry, registry.get('s-attach-from-approval'), 'tool_permission_required');
+    const s = registry.get('s-attach-from-approval')!;
+
+    registry.markAttachPending('s-attach-from-approval');
+
+    expect(s.status).toBe('attach_pending');
+    expect(s.runtimeState).toBe('waiting_approval');
+    expect(s.imWorkerPid).toBe(5003);
   });
 
   test('getByIMThread 按 plugin+threadId 查找', () => {
@@ -28,23 +106,19 @@ describe('SessionRegistry', () => {
 
   test('非法状态迁移时 markAttached 从 error 状态失败', () => {
     registry.create('s3', { workdir: '/tmp', cliPlugin: 'claude-code' });
-    // 手动设置 error 状态
     registry['_sessions'].get('s3')!.status = 'error';
     expect(() => registry.markAttached('s3', 999)).toThrow('INVALID_STATE_TRANSITION');
   });
 
-  // P1: initState 懒初始化闭环
   test('initState=uninitialized 时 attach 触发懒初始化（first-writer-wins）', async () => {
     registry.create('s4', { workdir: '/tmp', cliPlugin: 'claude-code' });
     const s = registry.get('s4')!;
     expect(s.initState).toBe('uninitialized');
 
-    // 并发两个 attach 请求
     const p1 = registry.beginInitAndAttach('s4', 1111);
     const p2 = registry.beginInitAndAttach('s4', 2222);
 
     const [r1, r2] = await Promise.allSettled([p1, p2]);
-    // 一个成功，一个返回 SESSION_BUSY
     expect([r1.status, r2.status].filter(s => s === 'fulfilled')).toHaveLength(1);
     expect([r1.status, r2.status].filter(s => s === 'rejected')).toHaveLength(1);
 
@@ -58,7 +132,6 @@ describe('SessionRegistry', () => {
     expect(() => registry.markAttached('s5', 999)).toThrow('SESSION_BUSY');
   });
 
-  // P1: lifecycleStatus 与 runtimeStatus 解耦
   test('lifecycleStatus=archived 时禁止进入运行态', () => {
     registry.create('s6', { workdir: '/tmp', cliPlugin: 'claude-code' });
     registry.archive('s6');
@@ -67,35 +140,31 @@ describe('SessionRegistry', () => {
 
   test('lifecycleStatus 与 runtimeStatus 独立迁移', () => {
     registry.create('s7', { workdir: '/tmp', cliPlugin: 'claude-code' });
-    registry.markStale('s7'); // lifecycleStatus: active → stale
+    registry.markStale('s7');
     const s = registry.get('s7')!;
     expect(s.lifecycleStatus).toBe('stale');
-    expect(s.status).toBe('idle'); // runtimeStatus 不受影响
+    expect(s.status).toBe('idle');
   });
 
-  // P1: session 锁 + revision CAS
   test('并发状态变更时 revision CAS 冲突返回 SESSION_BUSY', () => {
     registry.create('s8', { workdir: '/tmp', cliPlugin: 'claude-code' });
     const s = registry.get('s8')!;
     const rev = s.revision;
 
-    // 模拟并发：第一个操作成功，第二个基于旧 revision 失败
-    registry.markAttached('s8', 1111); // revision++
+    registry.markAttached('s8', 1111);
     expect(() => registry.markAttachedWithRevision('s8', 2222, rev)).toThrow('SESSION_BUSY');
   });
 
-  // P1: attach 优先于 IM
   test('idle 态并发时 attach 优先，IM 入队', async () => {
     registry.create('s9', { workdir: '/tmp', cliPlugin: 'claude-code' });
 
-    // 并发 attach 和 IM 消息
     const attachPromise = registry.beginAttach('s9', 1111);
-    const imPromise = registry.enqueueIMMessage('s9', { text: 'hello', dedupeKey: 'k1' });
+    registry.enqueueIMMessage('s9', { text: 'hello', dedupeKey: 'k1' });
 
     await attachPromise;
     const s = registry.get('s9')!;
     expect(s.status).toBe('attached');
-    expect(s.messageQueue).toHaveLength(1); // IM 消息已入队
+    expect(s.messageQueue).toHaveLength(1);
   });
 
   test('attach 期间 IM 入队（SPEC §3.9：attached 时默认入队）', () => {

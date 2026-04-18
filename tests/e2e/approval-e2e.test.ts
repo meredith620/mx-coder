@@ -7,6 +7,7 @@ import { SessionRegistry } from '../../src/session-registry.js';
 import { IMMessageDispatcher } from '../../src/im-message-dispatcher.js';
 import { ApprovalHandler } from '../../src/approval-handler.js';
 import { ApprovalManager } from '../../src/approval-manager.js';
+import { IMWorkerManager } from '../../src/im-worker-manager.js';
 import { MockIMPlugin } from '../helpers/mock-im-plugin.js';
 import { MockCLIPlugin } from '../helpers/mock-cli-plugin.js';
 
@@ -103,7 +104,7 @@ setTimeout(() => { console.log(buf.trim()); s.destroy(); }, 2000);
       registry,
       imPlugin: mockIM,
       imTarget: { plugin: 'mock', threadId: 'thread-approval' },
-      cliPlugin: new MockCLIPlugin(mockCli),
+      workerManager: new IMWorkerManager(new MockCLIPlugin(mockCli), registry),
       pollIntervalMs: 50,
     });
 
@@ -193,7 +194,7 @@ setTimeout(() => { console.log(buf.trim()); s.destroy(); }, 2000);
       registry,
       imPlugin: mockIM,
       imTarget: { plugin: 'mock', threadId: 'thread-timeout' },
-      cliPlugin: new MockCLIPlugin(mockCli),
+      workerManager: new IMWorkerManager(new MockCLIPlugin(mockCli), registry),
       pollIntervalMs: 50,
     });
 

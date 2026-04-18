@@ -15,6 +15,7 @@ const session = {
   status: 'idle',
   lifecycleStatus: 'active',
   initState: 'initialized',
+  runtimeState: 'cold',
   revision: 0,
   spawnGeneration: 0,
   attachedPid: null,
@@ -61,7 +62,7 @@ describe('ClaudeCodePlugin', () => {
     expect(args).not.toContain('--resume');
   });
 
-  test('buildIMWorkerCommand 包含所有必要标志和 bridgeScriptPath', () => {
+  test('buildIMWorkerCommand 包含常驻 worker 所需标志', () => {
     const bridgePath = '/tmp/mm-coder-mcp-bridge-uuid-123.js';
     const { command, args } = plugin.buildIMWorkerCommand(session, bridgePath);
     expect(command).toBe('claude');
@@ -71,50 +72,24 @@ describe('ClaudeCodePlugin', () => {
     expect(args).toContain('--output-format');
     expect(args).toContain('stream-json');
     expect(args).toContain('--verbose');
-    expect(args).toContain('--permission-prompt-tool');
-    // bridge path injected after --permission-prompt-tool
+  });
+
+  test('buildIMWorkerCommand 通过 node bridge 脚本注入 permission prompt tool', () => {
+    const bridgePath = '/tmp/mm-coder-mcp-bridge-uuid-123.js';
+    const { args } = plugin.buildIMWorkerCommand(session, bridgePath);
     const ptIdx = args.indexOf('--permission-prompt-tool');
-    expect(args[ptIdx + 1]).toContain(bridgePath);
+
+    expect(ptIdx).toBeGreaterThan(-1);
+    expect(args[ptIdx + 1]).toBe(`node ${bridgePath}`);
+  });
+
+  test('buildIMMessageCommand 已从主插件契约退役', () => {
+    expect('buildIMMessageCommand' in plugin).toBe(false);
+    expect((plugin as { buildIMMessageCommand?: unknown }).buildIMMessageCommand).toBeUndefined();
   });
 
   test('generateSessionId 生成 UUID 格式', () => {
     const id = plugin.generateSessionId();
     expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-  });
-
-  test('buildIMMessageCommand 对不存在本地 session 的 initialized session 使用 --session-id', () => {
-    const { command, args } = plugin.buildIMMessageCommand({ ...session, workdir: tmpWorkdir, initState: 'initialized' } as Session, 'hello world');
-    expect(command).toBe('claude');
-    expect(args).toContain('--session-id');
-    expect(args).not.toContain('--resume');
-    expect(args).toContain('--verbose');
-  });
-
-  test('buildIMMessageCommand 对 uninitialized session 使用 --session-id', () => {
-    const { command, args } = plugin.buildIMMessageCommand({ ...session, initState: 'uninitialized' } as Session, 'hello world');
-    expect(command).toBe('claude');
-    expect(args).toContain('-p');
-    expect(args).toContain('hello world');
-    expect(args).toContain('--session-id');
-    expect(args).toContain('uuid-123');
-    expect(args).not.toContain('--resume');
-    expect(args).toContain('--verbose');
-  });
-
-  test('buildIMMessageCommand 生成带 prompt 的命令', () => {
-    const localSession = { ...session, workdir: tmpWorkdir } as Session;
-    const sessionPath = getClaudeSessionPath(tmpWorkdir, localSession.sessionId);
-    fs.mkdirSync(path.dirname(sessionPath), { recursive: true });
-    fs.writeFileSync(sessionPath, '{}\n', 'utf8');
-
-    const { command, args } = plugin.buildIMMessageCommand(localSession, 'hello world');
-    expect(command).toBe('claude');
-    expect(args).toContain('-p');
-    expect(args).toContain('hello world');
-    expect(args).toContain('--resume');
-    expect(args).toContain('uuid-123');
-    expect(args).toContain('--output-format');
-    expect(args).toContain('stream-json');
-    expect(args).toContain('--verbose');
   });
 });

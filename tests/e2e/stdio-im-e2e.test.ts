@@ -6,6 +6,7 @@ import { Readable, Writable } from 'stream';
 import { SessionRegistry } from '../../src/session-registry.js';
 import { IMMessageDispatcher } from '../../src/im-message-dispatcher.js';
 import { StdioIMPlugin } from '../../src/plugins/im/stdio.js';
+import { IMWorkerManager } from '../../src/im-worker-manager.js';
 import { MockCLIPlugin } from '../helpers/mock-cli-plugin.js';
 
 /**
@@ -47,9 +48,10 @@ describe('StdioIMPlugin 完整链路 E2E', () => {
     const mockCli = path.join(tmpDir, 'mock-claude.sh');
     fs.writeFileSync(mockCli, [
       '#!/bin/sh',
-      'echo \'{"type":"assistant","payload":{"message":{"id":"msg-1","content":[{"type":"text","text":"Echo: test message"}]}}}\'',
-      'echo \'{"type":"result","payload":{"subtype":"success","result":"done"}}\'',
-      'exit 0',
+      'while IFS= read -r line; do',
+      '  echo \'{"type":"assistant","payload":{"message":{"id":"msg-1","content":[{"type":"text","text":"Echo: test message"}]}}}\'',
+      '  echo \'{"type":"result","payload":{"subtype":"success","result":"done"}}\'',
+      'done',
     ].join('\n'), { mode: 0o755 });
 
     const stdioPlugin = new StdioIMPlugin(stdinMock, stdoutMock);
@@ -73,7 +75,7 @@ describe('StdioIMPlugin 完整链路 E2E', () => {
       registry,
       imPlugin: stdioPlugin,
       imTarget: { plugin: 'stdio', threadId: 'thread-1' },
-      cliPlugin: new MockCLIPlugin(mockCli),
+      workerManager: new IMWorkerManager(new MockCLIPlugin(mockCli), registry),
     });
 
     dispatcher.start();
@@ -103,9 +105,12 @@ describe('StdioIMPlugin 完整链路 E2E', () => {
     const mockCli = path.join(tmpDir, 'mock-claude-multi.sh');
     fs.writeFileSync(mockCli, [
       '#!/bin/sh',
-      'echo \'{"type":"assistant","payload":{"message":{"id":"msg-1","content":[{"type":"text","text":"Response 1"}]}}}\'',
-      'echo \'{"type":"result","payload":{"subtype":"success","result":"done"}}\'',
-      'exit 0',
+      'COUNT=0',
+      'while IFS= read -r line; do',
+      '  COUNT=$((COUNT + 1))',
+      "  printf '{\"type\":\"assistant\",\"payload\":{\"message\":{\"id\":\"msg-%s\",\"content\":[{\"type\":\"text\",\"text\":\"Response %s\"}]}}}\n' \"$COUNT\" \"$COUNT\"",
+      '  echo \'{"type":"result","payload":{"subtype":"success","result":"done"}}\'',
+      'done',
     ].join('\n'), { mode: 0o755 });
 
     const stdioPlugin = new StdioIMPlugin(stdinMock, stdoutMock);
@@ -129,7 +134,7 @@ describe('StdioIMPlugin 完整链路 E2E', () => {
       registry,
       imPlugin: stdioPlugin,
       imTarget: { plugin: 'stdio', threadId: 'thread-2' },
-      cliPlugin: new MockCLIPlugin(mockCli),
+      workerManager: new IMWorkerManager(new MockCLIPlugin(mockCli), registry),
     });
 
     dispatcher.start();
@@ -157,7 +162,7 @@ describe('StdioIMPlugin 完整链路 E2E', () => {
     await new Promise(resolve => setTimeout(resolve, 1500));
 
     const output = stdoutLines.join('');
-    // Should have at least 2 live message creations
+    // Should have at least 2 live message creations across two turns
     const liveCount = (output.match(/"type":"live"/g) || []).length;
     expect(liveCount).toBeGreaterThanOrEqual(2);
 

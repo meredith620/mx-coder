@@ -1,10 +1,11 @@
-import type { SessionStatus } from './types.js';
+import type { SessionStatus, RuntimeState } from './types.js';
 
 export interface SessionSummary {
   name: string;
   status: SessionStatus;
   workdir: string;
   lastActivityAt: Date;
+  runtimeState?: RuntimeState;
 }
 
 const STATUS_LABELS: Record<SessionStatus, string> = {
@@ -28,9 +29,10 @@ export function renderSessionList(sessions: SessionSummary[]): string {
 
   const lines: string[] = [];
   for (const s of sessions) {
-    const label = STATUS_LABELS[s.status] ?? s.status;
-    lines.push(`  ${s.name.padEnd(24)} ${label.padEnd(20)} ${s.workdir}`);
+    const statusLabel = STATUS_LABELS[s.status] ?? s.status;
+    const runtimeLabel = s.runtimeState ?? (s.status === 'attached' ? 'attached_terminal' : 'cold');
+    lines.push(`  ${s.name.padEnd(24)} ${statusLabel.padEnd(20)} ${runtimeLabel.padEnd(20)} ${s.workdir}`);
   }
 
-  return ['NAME                     STATUS               WORKDIR', ...lines, ''].join('\n');
+  return ['NAME                     STATUS               RUNTIME              WORKDIR', ...lines, ''].join('\n');
 }

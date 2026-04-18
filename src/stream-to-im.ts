@@ -3,28 +3,38 @@ import type { MessageTarget } from './types.js';
 
 const DEBOUNCE_MS = 500;
 
+interface AssistantPayload {
+  content?: Array<{ type: string; text?: string }>;
+  message?: { content?: Array<{ type: string; text?: string }> };
+}
+
 interface AssistantEvent {
   type: 'assistant';
-  payload?: { message?: { content?: Array<{ type: string; text?: string }> } };
+  messageId?: string;
+  payload?: AssistantPayload;
   message?: { content?: Array<{ type: string; text?: string }> };
 }
 
 interface ResultEvent {
   type: 'result';
-  payload?: { subtype?: string; result?: string };
+  messageId?: string;
+  subtype?: string;
+  result?: string;
 }
 
 interface ErrorEvent {
   type: 'error';
+  messageId?: string;
   payload?: { message?: string };
 }
 
-type StreamEvent = AssistantEvent | ResultEvent | ErrorEvent | { type: string; payload: unknown };
+type StreamEvent = AssistantEvent | ResultEvent | ErrorEvent | { type: string; messageId?: string; payload?: unknown };
 
 export class StreamToIM {
   private _plugin: IMPlugin;
   private _target: MessageTarget;
   private _messageId: string | null = null;
+  private _turnMessageId: string | null = null;
   private _buffer = '';
   private _timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -35,11 +45,19 @@ export class StreamToIM {
 
   async onEvent(event: StreamEvent): Promise<void> {
     if (event.type === 'assistant') {
+      const turnId = event.messageId ?? 'unknown-turn';
+      if (this._turnMessageId !== null && this._turnMessageId !== turnId) {
+        await this._flush();
+        this._messageId = null;
+        this._buffer = '';
+      }
+      this._turnMessageId = turnId;
+
       const e = event as AssistantEvent;
-      const content = e.payload?.message?.content ?? e.message?.content ?? [];
+      const content = e.payload?.content ?? e.payload?.message?.content ?? e.message?.content ?? [];
       const text = content
-        .filter(c => c.type === 'text')
-        .map(c => c.text ?? '')
+        .filter((c: { type: string; text?: string }) => c.type === 'text')
+        .map((c: { type: string; text?: string }) => c.text ?? '')
         .join('');
 
       if (!text) return;
@@ -51,8 +69,14 @@ export class StreamToIM {
         this._buffer += text;
         this._scheduleFlush();
       }
-    } else if (event.type === 'result' || event.type === 'error') {
+      return;
+    }
+
+    if (event.type === 'result' || event.type === 'error') {
       await this._flush();
+      this._messageId = null;
+      this._turnMessageId = null;
+      this._buffer = '';
     }
   }
 

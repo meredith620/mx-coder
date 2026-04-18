@@ -1,21 +1,19 @@
-import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { IMWorkerManager } from '../../src/im-worker-manager.js';
 import { SessionRegistry } from '../../src/session-registry.js';
-import type { CLIPlugin, CommandSpec } from '../../src/plugins/types.js';
+import type { CommandSpec, LegacyIMMessageCLIPlugin } from '../../src/plugins/types.js';
 import type { Session } from '../../src/types.js';
-import { spawn } from 'child_process';
 
-// Mock CLI plugin that spawns a sleep process
-class MockCLIPlugin implements CLIPlugin {
-  buildAttachCommand(session: Session): CommandSpec {
+class MockCLIPlugin implements LegacyIMMessageCLIPlugin {
+  buildAttachCommand(_session: Session): CommandSpec {
     return { command: 'sleep', args: ['60'] };
   }
 
-  buildIMWorkerCommand(session: Session, bridgeScriptPath: string): CommandSpec {
+  buildIMWorkerCommand(_session: Session, _bridgeScriptPath: string): CommandSpec {
     return { command: 'sleep', args: ['60'] };
   }
 
-  buildIMMessageCommand(session: Session, prompt: string): CommandSpec {
+  buildIMMessageCommand(_session: Session, _prompt: string): CommandSpec {
     return { command: 'sleep', args: ['60'] };
   }
 
@@ -24,17 +22,16 @@ class MockCLIPlugin implements CLIPlugin {
   }
 }
 
-// Mock CLI plugin that spawns a process that exits immediately
-class CrashingCLIPlugin implements CLIPlugin {
-  buildAttachCommand(session: Session): CommandSpec {
+class CrashingCLIPlugin implements LegacyIMMessageCLIPlugin {
+  buildAttachCommand(_session: Session): CommandSpec {
     return { command: 'false', args: [] };
   }
 
-  buildIMWorkerCommand(session: Session, bridgeScriptPath: string): CommandSpec {
+  buildIMWorkerCommand(_session: Session, _bridgeScriptPath: string): CommandSpec {
     return { command: 'false', args: [] };
   }
 
-  buildIMMessageCommand(session: Session, prompt: string): CommandSpec {
+  buildIMMessageCommand(_session: Session, _prompt: string): CommandSpec {
     return { command: 'false', args: [] };
   }
 
@@ -55,7 +52,6 @@ describe('IMWorkerManager', () => {
   });
 
   afterEach(async () => {
-    // Clean up any running processes
     for (const [name] of registry['_sessions']) {
       const session = registry.get(name);
       if (session?.imWorkerPid) {
@@ -66,41 +62,63 @@ describe('IMWorkerManager', () => {
     }
   });
 
-  test('spawn 后 isAlive 返回 true', async () => {
+  test('spawn 后进入 ready 并且 isAlive 返回 true', async () => {
     const session = registry.create('test', { workdir: '/tmp', cliPlugin: 'mock' });
     const mgr = new IMWorkerManager(mockPlugin, registry);
 
     await mgr.spawn(session);
+
+    const updated = registry.get('test')!;
     expect(mgr.isAlive('test')).toBe(true);
+    expect(updated.runtimeState).toBe('ready');
+    expect(updated.status).toBe('idle');
 
     await mgr.terminate('test');
   });
 
-  test('terminate 后 isAlive 返回 false', async () => {
+  test('ensureRunning 懒启动成功且不重复 spawn', async () => {
+    const session = registry.create('ensure-test', { workdir: '/tmp', cliPlugin: 'mock' });
+    const mgr = new IMWorkerManager(mockPlugin, registry);
+
+    await mgr.ensureRunning('ensure-test');
+    const firstPid = registry.get('ensure-test')!.imWorkerPid;
+    const firstGeneration = registry.get('ensure-test')!.spawnGeneration;
+
+    await mgr.ensureRunning('ensure-test');
+    const updated = registry.get('ensure-test')!;
+
+    expect(updated.imWorkerPid).toBe(firstPid);
+    expect(updated.spawnGeneration).toBe(firstGeneration);
+    expect(updated.runtimeState).toBe('ready');
+
+    await mgr.terminate('ensure-test');
+  });
+
+  test('terminate 后清理 pid 并回到 cold', async () => {
     const session = registry.create('test', { workdir: '/tmp', cliPlugin: 'mock' });
     const mgr = new IMWorkerManager(mockPlugin, registry);
 
     await mgr.spawn(session);
     await mgr.terminate('test');
-
-    // Wait a bit for process to exit
     await new Promise(resolve => setTimeout(resolve, 100));
+
+    const updated = registry.get('test')!;
     expect(mgr.isAlive('test')).toBe(false);
+    expect(updated.imWorkerPid).toBeNull();
+    expect(updated.runtimeState).toBe('cold');
   });
 
-  test('崩溃后 restartIfCrashed 递增 crashCount', async () => {
+  test('崩溃后进入 recovering 并在重启成功后回到 ready', async () => {
     const session = registry.create('test', { workdir: '/tmp', cliPlugin: 'crashing' });
     const mgr = new IMWorkerManager(crashingPlugin, registry);
 
     await mgr.spawn(session);
-
-    // Wait for crash and restart
     await new Promise(resolve => setTimeout(resolve, 500));
 
     const updated = registry.get('test')!;
     expect(updated.imWorkerCrashCount).toBeGreaterThan(0);
+    expect(['recovering', 'error', 'ready']).toContain(updated.runtimeState);
 
-    // Clean up
     if (updated.imWorkerPid) {
       try {
         process.kill(updated.imWorkerPid, 'SIGKILL');
@@ -113,22 +131,19 @@ describe('IMWorkerManager', () => {
     const mgr = new IMWorkerManager(crashingPlugin, registry);
 
     await mgr.spawn(session);
-
-    // Wait for all restart attempts (3 crashes)
     await new Promise(resolve => setTimeout(resolve, 5000));
 
     const updated = registry.get('test')!;
     expect(updated.status).toBe('error');
+    expect(updated.runtimeState).toBe('error');
     expect(updated.imWorkerCrashCount).toBeGreaterThanOrEqual(3);
   }, 15000);
 
   test('成功处理一条消息后 resetCrashCountOnSuccess 清零', () => {
-    const session = registry.create('test', { workdir: '/tmp', cliPlugin: 'mock' });
+    registry.create('test', { workdir: '/tmp', cliPlugin: 'mock' });
     const mgr = new IMWorkerManager(mockPlugin, registry);
 
-    // Manually set crashCount
     registry['_sessions'].get('test')!.imWorkerCrashCount = 2;
-
     mgr.resetCrashCountOnSuccess('test', 'correlation-1');
 
     expect(registry.get('test')!.imWorkerCrashCount).toBe(0);
@@ -138,17 +153,15 @@ describe('IMWorkerManager', () => {
     const session = registry.create('gen-test', { workdir: '/tmp', cliPlugin: 'mock' });
     const mgr = new IMWorkerManager(mockPlugin, registry);
 
-    // Simulate pre-warm and lazy spawn both triggering
     const spawn1 = mgr.spawn(session);
     const spawn2 = mgr.spawn(session);
 
     await Promise.allSettled([spawn1, spawn2]);
 
-    // Only one valid imWorkerPid at any time
     const s = registry.get('gen-test')!;
     expect(mgr.isAlive(s.name)).toBe(true);
+    expect(s.runtimeState).toBe('ready');
 
-    // Clean up
     await mgr.terminate('gen-test');
   });
 
@@ -156,23 +169,18 @@ describe('IMWorkerManager', () => {
     const session = registry.create('test', { workdir: '/tmp', cliPlugin: 'mock' });
     const mgr = new IMWorkerManager(mockPlugin, registry);
 
-    // First spawn
     await mgr.spawn(session);
     const firstPid = registry.get('test')!.imWorkerPid;
 
-    // Increment generation manually
     registry['_sessions'].get('test')!.spawnGeneration++;
 
-    // Second spawn (should terminate first)
     await mgr.spawn(session);
     const secondPid = registry.get('test')!.imWorkerPid;
 
     expect(secondPid).not.toBe(firstPid);
 
-    // Wait for first process to exit
     await new Promise(resolve => setTimeout(resolve, 200));
 
-    // First process should be dead
     let firstAlive = true;
     try {
       process.kill(firstPid!, 0);
@@ -181,7 +189,20 @@ describe('IMWorkerManager', () => {
     }
     expect(firstAlive).toBe(false);
 
-    // Clean up
     await mgr.terminate('test');
+  });
+
+  test('onDetach pre-warm 后 worker 进入 ready', async () => {
+    registry.create('detach-test', { workdir: '/tmp', cliPlugin: 'mock' });
+    const mgr = new IMWorkerManager(mockPlugin, registry);
+
+    await mgr.onDetach('detach-test');
+
+    const updated = registry.get('detach-test')!;
+    expect(updated.imWorkerPid).not.toBeNull();
+    expect(updated.runtimeState).toBe('ready');
+    expect(updated.status).toBe('idle');
+
+    await mgr.terminate('detach-test');
   });
 });

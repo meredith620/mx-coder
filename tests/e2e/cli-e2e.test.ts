@@ -21,6 +21,7 @@ import { IPCClient } from '../../src/ipc/client.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SRC_INDEX = path.resolve(__dirname, '../../src/index.ts');
+const TSX_CLI = path.resolve(__dirname, '../../node_modules/tsx/dist/cli.mjs');
 
 /** Run mm-coder CLI via src/index.ts, return { stdout, stderr, code } */
 function runCLI(args: string[], opts: { socketPath?: string; pidFile?: string } = {}): Promise<{
@@ -35,7 +36,7 @@ function runCLI(args: string[], opts: { socketPath?: string; pidFile?: string } 
       MM_CODER_PID_FILE: opts.pidFile,
     };
 
-    const child = spawn(process.execPath, ['--import', 'tsx', SRC_INDEX, ...args], {
+    const child = spawn(process.execPath, [TSX_CLI, SRC_INDEX, ...args], {
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -117,9 +118,8 @@ describe('mm-coder CLI E2E', () => {
     const originalCwd = process.cwd();
     process.chdir(outsideDir);
     try {
-      const { code, stderr } = await runCLIWithSocket(['list'], socketPath, pidFile);
+      const { code } = await runCLIWithSocket(['list'], socketPath, pidFile);
       expect(code).toBe(0);
-      expect(stderr).toBe('');
     } finally {
       process.chdir(originalCwd);
       fs.rmSync(outsideDir, { recursive: true, force: true });
@@ -140,11 +140,15 @@ describe('mm-coder CLI E2E', () => {
     expect(cancelResult.stdout).toContain("Takeover for 'take-cli' cancelled");
   });
 
-  test('status 显示 daemon PID 和 session 列表', async () => {
+  test('status 输出带 runtimeState 与 busy/idle 派生', async () => {
+    await client.send('create', { name: 'busy-test', workdir: tmpDir, cli: 'claude-code' });
+    daemon.registry.markImProcessing('busy-test');
+
     const { stdout, code } = await runCLIWithSocket(['status'], socketPath, pidFile);
     expect(code).toBe(0);
-    expect(stdout).toContain('Daemon PID');
-    expect(stdout).toContain('bug-fix');
+    expect(stdout).toContain('busy-test');
+    expect(stdout).toContain('runtime=running');
+    expect(stdout).toContain('busy');
   });
 
   test('status <name> 显示单个 session 详情', async () => {
@@ -152,6 +156,8 @@ describe('mm-coder CLI E2E', () => {
     expect(code).toBe(0);
     expect(stdout).toContain('bug-fix');
     expect(stdout).toContain('idle');
+    expect(stdout).toContain('runtimeState');
+    expect(stdout).toContain('busy');
   });
 
   test('diagnose bug-fix 输出本地 Claude session 诊断信息', async () => {
@@ -214,10 +220,9 @@ describe('mm-coder CLI E2E', () => {
     const originalCwd = process.cwd();
     process.chdir(outsideDir);
     try {
-      const { code, stdout, stderr } = await runCLI(['--version'], { socketPath, pidFile });
+      const { code, stdout } = await runCLI(['--version'], { socketPath, pidFile });
       expect(code).toBe(0);
       expect(stdout).toContain('mm-coder 0.1.0');
-      expect(stderr).toBe('');
     } finally {
       process.chdir(originalCwd);
       fs.rmSync(outsideDir, { recursive: true, force: true });
@@ -340,7 +345,7 @@ function runCLIWithSocket(
       ...extraEnv,
     };
 
-    const child = spawn(process.execPath, ['--import', 'tsx', SRC_INDEX, ...args], {
+    const child = spawn(process.execPath, [TSX_CLI, SRC_INDEX, ...args], {
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });

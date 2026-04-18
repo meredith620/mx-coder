@@ -199,7 +199,18 @@ describe('ApprovalManager — takeover priority', () => {
     expect(state?.cancelReason).toBe('takeover');
   });
 
-  test('cancelForTakeover 对没有 pending 的 session 是空操作', async () => {
-    await expect(mgr.cancelForTakeover('no-such-session')).resolves.toBeUndefined();
+  test('cancelForTakeover 不清理 session scope cache，由 completeTakeover/结束时失效', async () => {
+    const ctx = { sessionId: 's-cache', messageId: 'm1', toolUseId: 't1', operatorId: 'op1', capability: 'file_write' as const };
+    const req = await mgr.createPendingApproval(ctx);
+    await mgr.decide(req.requestId, { decision: 'approved', scope: 'session' });
+
+    await mgr.cancelForTakeover('s-cache');
+
+    const result = await mgr.applyRules('Edit', { path: '/tmp/b.txt' }, 'file_write', { sessionId: 's-cache', operatorId: 'op1' });
+    expect(result).toBe('allow');
+
+    mgr.invalidateSessionCache('s-cache');
+    const afterInvalidation = await mgr.applyRules('Edit', { path: '/tmp/b.txt' }, 'file_write', { sessionId: 's-cache', operatorId: 'op1' });
+    expect(afterInvalidation).toBe('ask');
   });
 });

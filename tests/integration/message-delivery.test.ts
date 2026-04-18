@@ -2,14 +2,14 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { IMWorkerManager } from '../../src/im-worker-manager.js';
 import { SessionRegistry } from '../../src/session-registry.js';
 import { determineRestoreAction } from '../../src/restore-action.js';
-import type { CLIPlugin, CommandSpec } from '../../src/plugins/types.js';
+import type { CommandSpec, LegacyIMMessageCLIPlugin } from '../../src/plugins/types.js';
 import type { Session, QueuedMessage } from '../../src/types.js';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
 // Mock CLI plugin that writes stdin to a temp file
-class EchoCLIPlugin implements CLIPlugin {
+class EchoCLIPlugin implements LegacyIMMessageCLIPlugin {
   tmpFile: string;
 
   constructor(tmpFile: string) {
@@ -37,7 +37,7 @@ class EchoCLIPlugin implements CLIPlugin {
   }
 }
 
-class SleepCLIPlugin implements CLIPlugin {
+class SleepCLIPlugin implements LegacyIMMessageCLIPlugin {
   buildAttachCommand(session: Session): CommandSpec {
     return { command: 'sleep', args: ['60'] };
   }

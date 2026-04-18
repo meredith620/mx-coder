@@ -7,6 +7,7 @@ import { SessionRegistry } from '../../src/session-registry.js';
 import { IMMessageDispatcher } from '../../src/im-message-dispatcher.js';
 import { MockIMPlugin } from '../helpers/mock-im-plugin.js';
 import { MockCLIPlugin } from '../helpers/mock-cli-plugin.js';
+import { IMWorkerManager } from '../../src/im-worker-manager.js';
 import { IPCServer } from '../../src/ipc/socket-server.js';
 import { attachSession } from '../../src/attach.js';
 
@@ -132,16 +133,17 @@ describe('attach + IM 切换 E2E', () => {
     const mockCliIM = path.join(tmpDir, 'mock-cli-im.sh');
     fs.writeFileSync(mockCliIM, [
       '#!/bin/sh',
-      'echo \'{"type":"assistant","payload":{"message":{"content":[{"type":"text","text":"processed queued message"}]}}}\'',
-      'echo \'{"type":"result","payload":{"subtype":"success","result":"done"}}\'',
-      'exit 0',
+      'while IFS= read -r line; do',
+      '  echo \'{"type":"assistant","payload":{"message":{"content":[{"type":"text","text":"processed queued message"}]}}}\'',
+      '  echo \'{"type":"result","payload":{"subtype":"success","result":"done"}}\'',
+      'done',
     ].join('\n'), { mode: 0o755 });
 
     dispatcher = new IMMessageDispatcher({
       registry,
       imPlugin: mockIM,
       imTarget: { plugin: 'mock', threadId: 'thread-1' },
-      cliPlugin: new MockCLIPlugin(mockCliIM),
+      workerManager: new IMWorkerManager(new MockCLIPlugin(mockCliIM), registry),
       pollIntervalMs: 50,
     });
 
@@ -168,16 +170,18 @@ describe('attach + IM 切换 E2E', () => {
     fs.writeFileSync(mockCliIM, [
       '#!/bin/sh',
       'sleep 1',
-      'echo \'{"type":"assistant","payload":{"message":{"content":[{"type":"text","text":"IM processing done"}]}}}\'',
-      'echo \'{"type":"result","payload":{"subtype":"success","result":"done"}}\'',
-      'exit 0',
+      'while IFS= read -r line; do',
+      '  sleep 3',
+      '  echo \'{"type":"assistant","payload":{"message":{"content":[{"type":"text","text":"IM processing done"}]}}}\'',
+      '  echo \'{"type":"result","payload":{"subtype":"success","result":"done"}}\'',
+      'done',
     ].join('\n'), { mode: 0o755 });
 
     dispatcher = new IMMessageDispatcher({
       registry,
       imPlugin: mockIM,
       imTarget: { plugin: 'mock', threadId: 'thread-2' },
-      cliPlugin: new MockCLIPlugin(mockCliIM),
+      workerManager: new IMWorkerManager(new MockCLIPlugin(mockCliIM), registry),
       pollIntervalMs: 50,
       onSessionImDone: (name) => {
         // When IM finishes, push session_resume so waiting attach can proceed
@@ -191,7 +195,7 @@ describe('attach + IM 切换 E2E', () => {
 
     dispatcher.start();
 
-    // Enqueue IM message
+    // Enqueue IM message and simulate an in-flight IM turn owned by the worker
     registry.enqueueIMMessage('im-attach-wait', {
       plugin: 'mock',
       threadId: 'thread-2',
@@ -200,18 +204,14 @@ describe('attach + IM 切换 E2E', () => {
       text: 'IM message first',
       dedupeKey: 'dedup-im-first',
     });
-
-    // Wait for IM processing to start
-    await new Promise(resolve => setTimeout(resolve, 200));
-
-    const s1 = registry.get('im-attach-wait');
-    expect(s1?.status).toBe('im_processing');
+    registry.markImProcessing('im-attach-wait');
+    registry['_sessions'].get('im-attach-wait')!.runtimeState = 'running';
+    registry['_sessions'].get('im-attach-wait')!.imWorkerPid = 4321;
 
     // Now try to attach → should get waitRequired: true
     const mockCliAttach = path.join(tmpDir, 'mock-cli-attach.sh');
     fs.writeFileSync(mockCliAttach, '#!/bin/sh\necho "attach executed"\nexit 0\n', { mode: 0o755 });
 
-    // Attach in background
     const attachPromise = attachSession({
       socketPath,
       sessionName: 'im-attach-wait',
@@ -219,17 +219,19 @@ describe('attach + IM 切换 E2E', () => {
       cliArgs: [],
     });
 
-    // Wait a bit
     await new Promise(resolve => setTimeout(resolve, 200));
 
-    // Session should be in attach_pending
-    const s2 = registry.get('im-attach-wait');
-    expect(s2?.status).toBe('attach_pending');
+    const s1 = registry.get('im-attach-wait');
+    expect(s1?.status).toBe('attach_pending');
 
-    // Wait for IM processing to complete (dispatcher will call markDetached → triggers session_resume)
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    // Simulate current IM turn finishing, which should wake attach waiter
+    registry.markImDone('im-attach-wait');
+    ipcServer.pushEventToAttachWaiter('im-attach-wait', {
+      type: 'event',
+      event: 'session_resume',
+      data: { name: 'im-attach-wait' },
+    });
 
-    // Attach should have completed
     await attachPromise;
 
     // Session should be idle after attach exits

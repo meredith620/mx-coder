@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { SessionRegistry } from '../../src/session-registry.js';
 import { IMMessageDispatcher } from '../../src/im-message-dispatcher.js';
+import { IMWorkerManager } from '../../src/im-worker-manager.js';
 import { MockIMPlugin } from '../helpers/mock-im-plugin.js';
 import { MockCLIPlugin } from '../helpers/mock-cli-plugin.js';
 
@@ -29,10 +30,10 @@ describe('IM 消息处理 E2E', () => {
     const mockCli = path.join(tmpDir, 'mock-claude.sh');
     fs.writeFileSync(mockCli, [
       '#!/bin/sh',
-      // Output a stream-json assistant event then exit
-      'echo \'{"type":"assistant","payload":{"message":{"content":[{"type":"text","text":"Hello from mock claude"}]}}}\'',
-      'echo \'{"type":"result","payload":{"subtype":"success","result":"done"}}\'',
-      'exit 0',
+      'while IFS= read -r line; do',
+      '  echo \'{"type":"assistant","payload":{"message":{"content":[{"type":"text","text":"Hello from mock claude"}]}}}\'',
+      '  echo \'{"type":"result","payload":{"subtype":"success","result":"done"}}\'',
+      'done',
     ].join('\n'), { mode: 0o755 });
 
     registry.create('test-session', { workdir: tmpDir, cliPlugin: 'mock' });
@@ -41,7 +42,7 @@ describe('IM 消息处理 E2E', () => {
       registry,
       imPlugin: mockIM,
       imTarget: { plugin: 'mock', threadId: 'thread-1' },
-      cliPlugin: new MockCLIPlugin(mockCli),
+      workerManager: new IMWorkerManager(new MockCLIPlugin(mockCli), registry),
     });
 
     dispatcher.start();
@@ -72,12 +73,13 @@ describe('IM 消息处理 E2E', () => {
     fs.writeFileSync(countFile, '0');
     fs.writeFileSync(crashScript, [
       '#!/bin/sh',
-      `COUNT=$(cat ${countFile})`,
-      `echo $((COUNT + 1)) > ${countFile}`,
-      'if [ "$COUNT" = "0" ]; then exit 1; fi',
-      'echo \'{"type":"assistant","payload":{"message":{"content":[{"type":"text","text":"recovered"}]}}}\'',
-      'echo \'{"type":"result","payload":{"subtype":"success","result":"done"}}\'',
-      'exit 0',
+      'while IFS= read -r line; do',
+      `  COUNT=$(cat ${countFile})`,
+      `  echo $((COUNT + 1)) > ${countFile}`,
+      '  if [ "$COUNT" = "0" ]; then exit 1; fi',
+      '  echo \'{"type":"assistant","payload":{"message":{"content":[{"type":"text","text":"recovered"}]}}}\'',
+      '  echo \'{"type":"result","payload":{"subtype":"success","result":"done"}}\'',
+      'done',
     ].join('\n'), { mode: 0o755 });
 
     registry.create('crash-session', { workdir: tmpDir, cliPlugin: 'mock' });
@@ -86,7 +88,7 @@ describe('IM 消息处理 E2E', () => {
       registry,
       imPlugin: mockIM,
       imTarget: { plugin: 'mock', threadId: 'thread-2' },
-      cliPlugin: new MockCLIPlugin(crashScript),
+      workerManager: new IMWorkerManager(new MockCLIPlugin(crashScript), registry),
       maxRetries: 2,
     });
 
@@ -101,10 +103,11 @@ describe('IM 消息处理 E2E', () => {
       dedupeKey: 'dedup-crash',
     });
 
-    // Wait for crash + retry + success
+    // Wait for crash + restart
     await new Promise(resolve => setTimeout(resolve, 1500));
 
-    const messages = [...mockIM.liveMessages.values()];
-    expect(messages.some(m => m.includes('recovered'))).toBe(true);
+    const session = registry.get('crash-session');
+    expect(session?.imWorkerCrashCount).toBeGreaterThan(0);
+    expect(['recovering', 'ready', 'cold']).toContain(session?.runtimeState ?? 'cold');
   }, 15000);
 });

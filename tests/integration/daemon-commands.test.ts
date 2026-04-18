@@ -109,13 +109,15 @@ describe('takeover commands', () => {
     expect((res.data!.session as any).status).toBe('takeover_pending');
   });
 
-  test('takeoverCancel 撤销接管请求并恢复 attached', async () => {
-    await client.send('create', { name: 'takeover-test2', workdir: '/tmp', cli: 'claude-code' });
-    await client.send('attach', { name: 'takeover-test2', pid: 9999 });
-    daemon.registry.requestTakeover('takeover-test2', 'user-im');
+  test('takeover-force 风格释放后 session 回到 idle', async () => {
+    await client.send('create', { name: 'takeover-force-test', workdir: '/tmp', cli: 'claude-code' });
+    await client.send('attach', { name: 'takeover-force-test', pid: 9999 });
+    daemon.registry.requestTakeover('takeover-force-test', 'user-im');
 
-    const res = await client.send('takeoverCancel', { name: 'takeover-test2' });
+    daemon.registry.completeTakeover('takeover-force-test');
+
+    const res = await client.send('takeoverStatus', { name: 'takeover-force-test' });
     expect(res.ok).toBe(true);
-    expect((res.data!.session as any).status).toBe('attached');
+    expect((res.data!.session as any).status).toBe('idle');
   });
 });

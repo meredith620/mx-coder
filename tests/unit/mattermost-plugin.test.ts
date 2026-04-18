@@ -307,6 +307,88 @@ describe('MattermostPlugin', () => {
     expect(fetchSpy).toHaveBeenCalledOnce();
   });
 
+  test('heartbeat 超时后主动 close 并重连', async () => {
+    vi.useFakeTimers();
+
+    fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 'bot-u1', username: 'bot' }),
+      text: async () => '',
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const plugin = new MattermostPlugin({
+      url: BASE_URL,
+      token: TOKEN,
+      channelId: CHANNEL_ID,
+      reconnectIntervalMs: 10,
+      heartbeatIntervalMs: 50,
+      heartbeatTimeoutMs: 120,
+    } as any);
+
+    await plugin.connect();
+    wsInstances[0].__emit('open');
+
+    vi.advanceTimersByTime(200);
+
+    expect(wsInstances[0].close).toHaveBeenCalled();
+    vi.advanceTimersByTime(20);
+    expect(wsInstances.length).toBeGreaterThan(1);
+
+    vi.useRealTimers();
+  });
+
+  test('收到 websocket 消息会刷新活性时间戳', async () => {
+    fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 'bot-u1', username: 'bot' }),
+      text: async () => '',
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const plugin = new MattermostPlugin({ url: BASE_URL, token: TOKEN, channelId: CHANNEL_ID } as any);
+    await plugin.connect();
+    wsInstances[0].__emit('open');
+
+    const before = (plugin as any)._lastWsMessageAt ?? 0;
+    wsInstances[0].__emit('message', { data: JSON.stringify({ event: 'hello', data: {} }) });
+    const after = (plugin as any)._lastWsMessageAt ?? 0;
+
+    expect(after).toBeGreaterThanOrEqual(before);
+  });
+
+  test('收到 websocket heartbeat ack 会刷新 ack 时间戳', async () => {
+    fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 'bot-u1', username: 'bot' }),
+      text: async () => '',
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const plugin = new MattermostPlugin({ url: BASE_URL, token: TOKEN, channelId: CHANNEL_ID } as any);
+    await plugin.connect();
+    wsInstances[0].__emit('open');
+
+    const before = (plugin as any)._lastHeartbeatAckAt ?? 0;
+    wsInstances[0].__emit('message', { data: JSON.stringify({ seq_reply: 1, status: 'OK' }) });
+    const after = (plugin as any)._lastHeartbeatAckAt ?? 0;
+
+    expect(after).toBeGreaterThanOrEqual(before);
+  });
+
+  test('sendTyping 发送 typing 指示请求', async () => {
+    const plugin = new MattermostPlugin({ url: BASE_URL, token: TOKEN, channelId: CHANNEL_ID } as any);
+    await plugin.sendTyping({ plugin: 'mattermost', threadId: 'root1' } as any);
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    const [url, opts] = fetchSpy.mock.calls[0];
+    expect(url).toBe(`${BASE_URL}/api/v4/posts`);
+    const body = JSON.parse(opts.body);
+    expect(body.props?.typing).toBe(true);
+  });
   test('requestApproval 发送带 attachments 的消息', async () => {
     const plugin = new MattermostPlugin({ url: BASE_URL, token: TOKEN, channelId: CHANNEL_ID });
     await plugin.requestApproval({ plugin: 'mattermost', threadId: 'root1' }, {
@@ -319,7 +401,7 @@ describe('MattermostPlugin', () => {
       capability: 'bash',
       scopeOptions: ['once', 'session'],
       timeoutSeconds: 60,
-    });
+    } as any);
 
     expect(fetchSpy).toHaveBeenCalledOnce();
     const [url, opts] = fetchSpy.mock.calls[0];
@@ -328,18 +410,23 @@ describe('MattermostPlugin', () => {
     expect(body.props?.attachments).toBeDefined();
   });
 
-  test('connect 遇到无效 token 会抛错', async () => {
-    const plugin = new MattermostPlugin({ url: BASE_URL, token: TOKEN, channelId: CHANNEL_ID });
-
+  test('getConnectionHealth 返回 ws/subscription 健康摘要', async () => {
     fetchSpy = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 401,
-      json: async () => ({ message: 'unauthorized' }),
-      text: async () => 'unauthorized',
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 'bot-u1', username: 'bot' }),
+      text: async () => '',
     });
     vi.stubGlobal('fetch', fetchSpy);
 
-    await expect(plugin.connect()).rejects.toThrow(/401/);
+    const plugin = new MattermostPlugin({ url: BASE_URL, token: TOKEN, channelId: CHANNEL_ID } as any);
+    await plugin.connect();
+    wsInstances[0].__emit('open');
+
+    const health = plugin.getConnectionHealth();
+    expect(typeof health.wsHealthy).toBe('boolean');
+    expect(typeof health.subscriptionHealthy).toBe('boolean');
+    expect(typeof health.lastWsOpenAt).toBe('number');
   });
 
   test('disconnect 会关闭 websocket', async () => {

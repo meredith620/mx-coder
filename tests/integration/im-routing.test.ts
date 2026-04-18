@@ -10,6 +10,7 @@ import { SessionRegistry } from '../../src/session-registry.js';
 import { MockIMPlugin } from '../helpers/mock-im-plugin.js';
 import { MockCLIPlugin } from '../helpers/mock-cli-plugin.js';
 import { IMMessageDispatcher } from '../../src/im-message-dispatcher.js';
+import { IMWorkerManager } from '../../src/im-worker-manager.js';
 import type { IncomingMessage } from '../../src/types.js';
 
 // ── helper: build a minimal IncomingMessage ────────────────────────────────
@@ -337,9 +338,10 @@ describe('IMMessageDispatcher 动态 thread 路由', () => {
     const mockCli = path.join(tmpDir, 'mock-claude.sh');
     fs.writeFileSync(mockCli, [
       '#!/bin/sh',
-      'echo \'{"type":"assistant","payload":{"message":{"content":[{"type":"text","text":"hi"}]}}}\'',
-      'echo \'{"type":"result","payload":{"subtype":"success","result":"done"}}\'',
-      'exit 0',
+      'while IFS= read -r line; do',
+      '  echo \'{"type":"assistant","payload":{"message":{"content":[{"type":"text","text":"hi"}]}}}\'',
+      '  echo \'{"type":"result","payload":{"subtype":"success","result":"done"}}\'',
+      'done',
     ].join('\n'), { mode: 0o755 });
 
     registry.create('sess1', { workdir: tmpDir, cliPlugin: 'mock' });
@@ -348,7 +350,7 @@ describe('IMMessageDispatcher 动态 thread 路由', () => {
       registry,
       imPlugin: mockIM,
       imTarget: { plugin: 'mattermost', channelId: 'ch1', threadId: 'FIXED-WRONG-THREAD' },
-      cliPlugin: new MockCLIPlugin(mockCli),
+      workerManager: new IMWorkerManager(new MockCLIPlugin(mockCli), registry),
     });
     dispatcher.start();
 
@@ -375,9 +377,10 @@ describe('IMMessageDispatcher 动态 thread 路由', () => {
     const mockCli = path.join(tmpDir, 'mock-claude2.sh');
     fs.writeFileSync(mockCli, [
       '#!/bin/sh',
-      'echo \'{"type":"assistant","payload":{"message":{"content":[{"type":"text","text":"reply"}]}}}\'',
-      'echo \'{"type":"result","payload":{"subtype":"success","result":"done"}}\'',
-      'exit 0',
+      'while IFS= read -r line; do',
+      '  echo \'{"type":"assistant","payload":{"message":{"content":[{"type":"text","text":"reply"}]}}}\'',
+      '  echo \'{"type":"result","payload":{"subtype":"success","result":"done"}}\'',
+      'done',
     ].join('\n'), { mode: 0o755 });
 
     registry.create('sess-a', { workdir: tmpDir, cliPlugin: 'mock' });
@@ -387,7 +390,7 @@ describe('IMMessageDispatcher 动态 thread 路由', () => {
       registry,
       imPlugin: mockIM,
       imTarget: { plugin: 'mattermost', channelId: 'ch1', threadId: '' },
-      cliPlugin: new MockCLIPlugin(mockCli),
+      workerManager: new IMWorkerManager(new MockCLIPlugin(mockCli), registry),
       pollIntervalMs: 50,
     });
     dispatcher.start();
@@ -428,7 +431,7 @@ describe('IMMessageDispatcher 动态 thread 路由', () => {
       registry,
       imPlugin: mockIM,
       imTarget: { plugin: 'mattermost', channelId: 'ch1', threadId: '' },
-      cliPlugin: new MockCLIPlugin(mockCli),
+      workerManager: new IMWorkerManager(new MockCLIPlugin(mockCli), registry),
       pollIntervalMs: 50,
     });
     dispatcher.start();
@@ -448,9 +451,119 @@ describe('IMMessageDispatcher 动态 thread 路由', () => {
     expect(registry.get('sess-attached')?.messageQueue[0].status).toBe('pending');
   }, 10000);
 
+  test('dispatcher approval_pending 状态下冻结队列', async () => {
+    const mockCli = path.join(tmpDir, 'should-not-run-approval.sh');
+    fs.writeFileSync(mockCli, '#!/bin/sh\necho should-not-run\nexit 0\n', { mode: 0o755 });
+
+    const session = registry.create('sess-approval', { workdir: tmpDir, cliPlugin: 'mock' });
+    session.status = 'approval_pending';
+    session.runtimeState = 'waiting_approval';
+
+    dispatcher = new IMMessageDispatcher({
+      registry,
+      imPlugin: mockIM,
+      imTarget: { plugin: 'mattermost', channelId: 'ch1', threadId: '' },
+      workerManager: new IMWorkerManager(new MockCLIPlugin(mockCli), registry),
+      pollIntervalMs: 50,
+    });
+    dispatcher.start();
+
+    registry.enqueueIMMessage('sess-approval', {
+      text: 'queued while approval',
+      dedupeKey: 'dk-approval',
+      plugin: 'mattermost',
+      threadId: 'thread-approval',
+      messageId: 'mid-approval',
+      userId: 'u-approval',
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 300));
+
+    expect(mockIM.liveMessages.size).toBe(0);
+    expect(registry.get('sess-approval')?.messageQueue[0].status).toBe('pending');
+  }, 10000);
+
+  test('dispatcher takeover_pending 状态下冻结队列', async () => {
+    const mockCli = path.join(tmpDir, 'should-not-run-takeover.sh');
+    fs.writeFileSync(mockCli, '#!/bin/sh\necho should-not-run\nexit 0\n', { mode: 0o755 });
+
+    const session = registry.create('sess-takeover', { workdir: tmpDir, cliPlugin: 'mock' });
+    session.status = 'takeover_pending';
+    session.runtimeState = 'takeover_pending';
+
+    dispatcher = new IMMessageDispatcher({
+      registry,
+      imPlugin: mockIM,
+      imTarget: { plugin: 'mattermost', channelId: 'ch1', threadId: '' },
+      workerManager: new IMWorkerManager(new MockCLIPlugin(mockCli), registry),
+      pollIntervalMs: 50,
+    });
+    dispatcher.start();
+
+    registry.enqueueIMMessage('sess-takeover', {
+      text: 'queued while takeover',
+      dedupeKey: 'dk-takeover',
+      plugin: 'mattermost',
+      threadId: 'thread-takeover',
+      messageId: 'mid-takeover',
+      userId: 'u-takeover',
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 300));
+
+    expect(mockIM.liveMessages.size).toBe(0);
+    expect(registry.get('sess-takeover')?.messageQueue[0].status).toBe('pending');
+  }, 10000);
+
+  test('同一 session 多条消息 FIFO 串行处理', async () => {
+    const mockCli = path.join(tmpDir, 'serial.sh');
+    const outFile = path.join(tmpDir, 'serial-order.log');
+    fs.writeFileSync(mockCli, [
+      '#!/bin/sh',
+      'while IFS= read -r line; do',
+      `  printf "%s\\n" "$line" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{const msg=JSON.parse(d);require("fs").appendFileSync(process.argv[1], msg.message.content[0].text+"\\n")})' "${outFile}"`,
+      "  printf '%s\\n' '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}'",
+      "  printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"done\"}'",
+      'done',
+    ].join('\n'), { mode: 0o755 });
+
+    registry.create('sess-serial', { workdir: tmpDir, cliPlugin: 'mock' });
+
+    dispatcher = new IMMessageDispatcher({
+      registry,
+      imPlugin: mockIM,
+      imTarget: { plugin: 'mattermost', channelId: 'ch1', threadId: '' },
+      workerManager: new IMWorkerManager(new MockCLIPlugin(mockCli), registry),
+      pollIntervalMs: 20,
+    });
+    dispatcher.start();
+
+    registry.enqueueIMMessage('sess-serial', {
+      text: 'first',
+      dedupeKey: 'dk-first',
+      plugin: 'mattermost',
+      threadId: 'thread-serial',
+      messageId: 'mid-first',
+      userId: 'u-first',
+    });
+    registry.enqueueIMMessage('sess-serial', {
+      text: 'second',
+      dedupeKey: 'dk-second',
+      plugin: 'mattermost',
+      threadId: 'thread-serial',
+      messageId: 'mid-second',
+      userId: 'u-second',
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    const order = fs.readFileSync(outFile, 'utf8').trim().split('\n').filter(Boolean);
+    expect(order).toEqual(['first', 'second']);
+  }, 10000);
+
   test('Claude 非 0 退出时消息状态为 failed', async () => {
     const failCli = path.join(tmpDir, 'fail.sh');
-    fs.writeFileSync(failCli, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    fs.writeFileSync(failCli, '#!/bin/sh\nif read line; then exit 1; fi\n', { mode: 0o755 });
 
     registry.create('sess-fail', { workdir: tmpDir, cliPlugin: 'mock' });
 
@@ -458,7 +571,8 @@ describe('IMMessageDispatcher 动态 thread 路由', () => {
       registry,
       imPlugin: mockIM,
       imTarget: { plugin: 'mattermost', channelId: 'ch1', threadId: '' },
-      cliPlugin: new MockCLIPlugin(failCli),
+      workerManager: new IMWorkerManager(new MockCLIPlugin(failCli), registry),
+      pollIntervalMs: 20,
       maxRetries: 0,
     });
     dispatcher.start();

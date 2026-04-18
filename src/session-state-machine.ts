@@ -45,6 +45,8 @@ export const TRANSITION_TABLE: Record<SessionStatus, Partial<Record<StateEvent, 
     approval_approved:    'im_processing',
     approval_denied:      'im_processing',
     approval_timeout_or_restart: 'idle',
+    attach_start:         'attach_pending',
+    worker_crash:         'recovering',
   },
   takeover_pending: {
     terminal_sigterm_exited: 'idle',

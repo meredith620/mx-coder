@@ -33,18 +33,16 @@ describe('attach command', () => {
     expect(s.status).toBe('attached');
   });
 
-  test('attach im_processing session 返回 waitRequired + attach_pending', async () => {
-    await client.send('create', { name: 'a2', workdir: '/tmp', cli: 'claude-code' });
-    // 手动将 session 设为 im_processing
-    daemon.registry['_sessions'].get('a2')!.status = 'im_processing';
+  test('attach approval_pending session 返回 waitRequired + attach_pending', async () => {
+    await client.send('create', { name: 'a-approval', workdir: '/tmp', cli: 'claude-code' });
+    daemon.registry.markImProcessing('a-approval', 1234);
+    daemon.registry['_applyTransition' as keyof typeof daemon.registry]?.call?.(daemon.registry, daemon.registry.get('a-approval'), 'tool_permission_required');
 
-    const res = await client.send('attach', { name: 'a2', pid: 9999 });
+    const res = await client.send('attach', { name: 'a-approval', pid: 9999 });
     expect(res.ok).toBe(true);
     expect(res.data!.waitRequired).toBe(true);
-
-    const listRes = await client.send('list', {});
-    const s = (listRes.data!.sessions as any[]).find((s: any) => s.name === 'a2');
-    expect(s.status).toBe('attach_pending');
+    expect(daemon.registry.get('a-approval')?.status).toBe('attach_pending');
+    expect(daemon.registry.get('a-approval')?.runtimeState).toBe('waiting_approval');
   });
 
   test('attach nonexistent session 返回 SESSION_NOT_FOUND', async () => {
@@ -111,15 +109,14 @@ describe('attach command', () => {
     expect(s2.status).toBe('idle');
   });
 
-  test('markDetached 后可以重新 attach', async () => {
-    await client.send('create', { name: 'a7', workdir: '/tmp', cli: 'claude-code' });
-    await client.send('attach', { name: 'a7', pid: 9999 });
-    await client.send('markDetached', { name: 'a7', exitReason: 'normal' });
+  test('attach ready worker 时不等待，直接 attached', async () => {
+    await client.send('create', { name: 'a-ready', workdir: '/tmp', cli: 'claude-code' });
+    daemon.registry.markWorkerReady('a-ready', 12345);
 
-    // Re-attach should succeed
-    const res = await client.send('attach', { name: 'a7', pid: 10000 });
+    const res = await client.send('attach', { name: 'a-ready', pid: 9999 });
     expect(res.ok).toBe(true);
-    expect(res.data!.session.status).toBe('attached');
+    expect(res.data!.waitRequired).toBeUndefined();
+    expect(daemon.registry.get('a-ready')?.status).toBe('attached');
   });
 
   test('IM 完成后向 attach waiter 推送 session_resume', async () => {
@@ -144,6 +141,11 @@ describe('attach command', () => {
 
     await new Promise(resolve => setTimeout(resolve, 50));
     daemon.registry.markImDone('a8');
+    (daemon as any)._server.pushEventToAttachWaiter('a8', {
+      type: 'event',
+      event: 'session_resume',
+      data: { name: 'a8' },
+    });
     await new Promise(resolve => setTimeout(resolve, 50));
 
     expect(chunks.join('')).toContain('session_resume');

@@ -1,8 +1,8 @@
 import { randomUUID } from 'crypto';
-import type { CLIPlugin, CommandSpec } from '../../src/plugins/types.js';
+import type { CLIPlugin, CommandSpec, LegacyIMMessageCLIPlugin } from '../../src/plugins/types.js';
 import type { Session } from '../../src/types.js';
 
-export class MockCLIPlugin implements CLIPlugin {
+export class MockCLIPlugin implements LegacyIMMessageCLIPlugin {
   private _command: string;
   private _args: string[];
 
@@ -18,10 +18,10 @@ export class MockCLIPlugin implements CLIPlugin {
     };
   }
 
-  buildIMWorkerCommand(session: Session, bridgeScriptPath: string): CommandSpec {
+  buildIMWorkerCommand(_session: Session, _bridgeScriptPath: string): CommandSpec {
     return {
       command: this._command,
-      args: [...this._args, '--resume', session.sessionId, '--bridge', bridgeScriptPath],
+      args: [...this._args],
     };
   }
 
