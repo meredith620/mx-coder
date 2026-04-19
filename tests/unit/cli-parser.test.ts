@@ -123,9 +123,16 @@ describe('CLI 命令解析', () => {
     expect(() => parseCLIArgs(['im', 'unknown'])).toThrow(/Unknown im subcommand/);
   });
 
-  test('parse "tui" command', () => {
-    const parsed = parseCLIArgs(['tui']);
-    expect(parsed.command).toBe('tui');
+  test('parse "completion bash"', () => {
+    const parsed = parseCLIArgs(['completion', 'bash']);
+    expect(parsed.command).toBe('completion');
+    expect(parsed.args.shell).toBe('bash');
+  });
+
+  test('parse "completion zsh"', () => {
+    const parsed = parseCLIArgs(['completion', 'zsh']);
+    expect(parsed.command).toBe('completion');
+    expect(parsed.args.shell).toBe('zsh');
   });
 
   test('未知命令抛出错误', () => {

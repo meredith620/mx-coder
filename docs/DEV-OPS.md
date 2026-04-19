@@ -46,6 +46,38 @@ npm link
 
 修改源码后重新 `npm run build`，`mm-coder` 命令即反映最新构建结果。
 
+### Shell completion 安装
+
+#### Bash
+
+```bash
+# 生成并加载 mm-coder bash completion
+eval "$(mm-coder completion bash)"
+
+# 若希望每次打开 shell 自动生效，可写入 ~/.bashrc
+echo 'eval "$(mm-coder completion bash)"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+#### Zsh
+
+```bash
+# 生成并加载 mm-coder zsh completion
+eval "$(mm-coder completion zsh)"
+
+# 若希望每次打开 shell 自动生效，可写入 ~/.zshrc
+echo 'eval "$(mm-coder completion zsh)"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+#### 动态 session 名补全说明
+
+```bash
+mm-coder completion sessions
+```
+
+该命令用于输出当前 daemon 中可补全的 session 名，供 shell completion 内部调用；无 session 时输出为空且不报错。
+
 ### 卸载本地安装
 
 ```bash

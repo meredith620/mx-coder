@@ -1,7 +1,7 @@
-type CLICommand = 'create' | 'attach' | 'diagnose' | 'takeover-status' | 'takeover-cancel' | 'import' | 'list' | 'status' | 'remove' | 'start' | 'stop' | 'restart' | 'im' | 'im-init' | 'im-verify' | 'im-run' | 'tui';
+type CLICommand = 'create' | 'attach' | 'diagnose' | 'takeover-status' | 'takeover-cancel' | 'import' | 'list' | 'status' | 'remove' | 'start' | 'stop' | 'restart' | 'completion' | 'im' | 'im-init' | 'im-verify' | 'im-run' | 'tui';
 type IMSubcommand = 'init' | 'verify' | 'run';
 
-const KNOWN_COMMANDS = new Set<CLICommand>(['create', 'attach', 'diagnose', 'takeover-status', 'takeover-cancel', 'import', 'list', 'status', 'remove', 'start', 'stop', 'restart', 'im', 'im-init', 'im-verify', 'im-run', 'tui']);
+const KNOWN_COMMANDS = new Set<CLICommand>(['create', 'attach', 'diagnose', 'takeover-status', 'takeover-cancel', 'import', 'list', 'status', 'remove', 'start', 'stop', 'restart', 'completion', 'im', 'im-init', 'im-verify', 'im-run', 'tui']);
 const IM_SUBCOMMANDS = new Set<IMSubcommand>(['init', 'verify', 'run']);
 
 export interface ParsedCLI {
@@ -12,7 +12,7 @@ export interface ParsedCLI {
 
 /**
  * Parse mm-coder CLI arguments into a structured object.
- * Supports: create, attach, import, list, status, remove, start, stop, restart, im <init|verify|run>, tui
+ * Supports: create, attach, diagnose, takeover-status, takeover-cancel, import, list, status, remove, start, stop, restart, completion, im <init|verify|run>, tui
  * Backward compatible: im-init → im init, im-verify → im verify, im-run → im run
  */
 export function parseCLIArgs(argv: string[]): ParsedCLI {
@@ -105,6 +105,9 @@ export function parseCLIArgs(argv: string[]): ParsedCLI {
       break;
     case 'remove':
       if (positionals[0] && !args['name']) args['name'] = positionals[0];
+      break;
+    case 'completion':
+      if (positionals[0] && !args['shell']) args['shell'] = positionals[0];
       break;
     case 'im':
       if (subcommand === 'run' && positionals[0] && !args['sessionName']) args['sessionName'] = positionals[0];

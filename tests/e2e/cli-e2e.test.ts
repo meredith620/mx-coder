@@ -75,13 +75,30 @@ describe('mm-coder CLI E2E', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  test('--help 输出帮助信息', async () => {
-    const { stdout, code } = await runCLI(['--help'], { socketPath, pidFile });
+  test('completion bash 输出静态补全脚本', async () => {
+    const { stdout, code } = await runCLIWithSocket(['completion', 'bash'], socketPath, pidFile);
     expect(code).toBe(0);
-    expect(stdout).toContain('mm-coder');
-    expect(stdout).toContain('start');
+    expect(stdout).toContain('complete -F');
     expect(stdout).toContain('create');
     expect(stdout).toContain('attach');
+    expect(stdout).toContain('diagnose');
+    expect(stdout).toContain('takeover-status');
+    expect(stdout).toContain('takeover-cancel');
+    expect(stdout).toContain('im');
+    expect(stdout).toContain('tui');
+  });
+
+  test('completion zsh 输出静态补全脚本', async () => {
+    const { stdout, code } = await runCLIWithSocket(['completion', 'zsh'], socketPath, pidFile);
+    expect(code).toBe(0);
+    expect(stdout).toContain('#compdef mm-coder');
+    expect(stdout).toContain('create');
+    expect(stdout).toContain('attach');
+    expect(stdout).toContain('diagnose');
+    expect(stdout).toContain('takeover-status');
+    expect(stdout).toContain('takeover-cancel');
+    expect(stdout).toContain('im');
+    expect(stdout).toContain('tui');
   });
 
   test('无参数输出帮助信息', async () => {

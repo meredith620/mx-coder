@@ -41,6 +41,45 @@ mm-coder attach bug-fix                     # 直接进入 Claude Code
 mm-coder attach bug-fix                     # 再次进入，自动 resume
 ```
 
+## Shell Completion
+
+mm-coder 已支持：
+- `mm-coder completion bash`：输出 bash 补全脚本
+- `mm-coder completion zsh`：输出 zsh 补全脚本
+- `mm-coder completion sessions`：输出当前可补全的 session 名（供 shell completion 内部调用）
+
+### Bash
+
+将以下内容加入 `~/.bashrc`：
+
+```bash
+eval "$(mm-coder completion bash)"
+```
+
+保存后执行：
+
+```bash
+source ~/.bashrc
+```
+
+### Zsh
+
+将以下内容加入 `~/.zshrc`：
+
+```bash
+eval "$(mm-coder completion zsh)"
+```
+
+保存后执行：
+
+```bash
+source ~/.zshrc
+```
+
+说明：
+- 当前 T1/T2 已支持静态子命令补全，以及通过 `completion sessions` 获取动态 session 名
+- shell 脚本本身已包含 `completion` 子命令的参数补全骨架
+
 ## 配置
 
 ### Mattermost

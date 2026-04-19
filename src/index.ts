@@ -80,6 +80,11 @@ async function main() {
         await handleDiagnose(parsed.args);
         break;
       case 'import':
+        await handleImport(parsed.args);
+        break;
+      case 'completion':
+        await handleCompletion(parsed.args);
+        break;
       case 'im':
         await handleIm(parsed.subcommand!, parsed.args);
         break;
@@ -120,6 +125,7 @@ COMMANDS:
   remove <name> [-n|--name <name>]  Remove a session
   import <sessionId> [-s|--sessionId <id>] -w <path> [-n|--name <name>] [-C|--cli <name>]
                                   Import external session
+  completion <bash|zsh|sessions>   Print shell completion script or session names
   im init [-p|--plugin <name>] [-c|--config <path>]
                                   Create IM config template
   im verify [-p|--plugin <name>] [-c|--config <path>]
@@ -139,10 +145,113 @@ EXAMPLES:
   mm-coder list
   mm-coder status bug-fix -n my-session
   mm-coder remove bug-fix -n my-session
+  mm-coder completion bash
+  mm-coder completion zsh
+  mm-coder completion sessions
   mm-coder im init -p discord
   mm-coder im verify
   mm-coder im init -c ~/.mm-coder/discord.json
 `.trim());
+}
+
+function getCompletionCommands(): string[] {
+  return [
+    'start',
+    'stop',
+    'restart',
+    'create',
+    'attach',
+    'diagnose',
+    'takeover-status',
+    'takeover-cancel',
+    'list',
+    'status',
+    'remove',
+    'import',
+    'completion',
+    'im',
+    'tui',
+  ];
+}
+
+function renderBashCompletion(): string {
+  const commands = getCompletionCommands().join(' ');
+  return `# bash completion for mm-coder
+_mm_coder_completions() {
+  local cur prev words cword
+  cur="\${COMP_WORDS[COMP_CWORD]}"
+  prev="\${COMP_WORDS[COMP_CWORD-1]}"
+
+  if [[ \${COMP_CWORD} -eq 1 ]]; then
+    COMPREPLY=( $(compgen -W "${commands}" -- "\${cur}") )
+    return 0
+  fi
+
+  if [[ \${COMP_WORDS[1]} == "completion" ]]; then
+    COMPREPLY=( $(compgen -W "bash zsh sessions" -- "\${cur}") )
+    return 0
+  fi
+}
+complete -F _mm_coder_completions mm-coder
+`;
+}
+
+function renderZshCompletion(): string {
+  const commands = getCompletionCommands().map((command) => `'${command}:${command}'`).join(' ');
+  return `#compdef mm-coder
+
+_mm_coder() {
+  local -a commands
+  commands=(
+    ${commands}
+  )
+
+  if (( CURRENT == 2 )); then
+    _describe 'command' commands
+    return
+  fi
+
+  if [[ \${words[2]} == completion ]]; then
+    _values 'shell' bash zsh sessions
+    return
+  fi
+}
+
+_mm_coder "$@"
+`;
+}
+
+async function handleCompletion(args: Record<string, string | undefined>) {
+  const shell = args.shell;
+
+  if (shell === 'sessions') {
+    const client = new IPCClient(SOCKET_PATH);
+    await client.connect();
+    const res = await client.send('list', {});
+    await client.close();
+
+    if (!res.ok) {
+      throw new Error(`Failed to load sessions for completion: ${res.error!.message}`);
+    }
+
+    const sessions = res.data.sessions as Array<Record<string, unknown>>;
+    const names = sessions
+      .map((session) => session.name)
+      .filter((name): name is string => typeof name === 'string');
+    process.stdout.write(names.join('\n'));
+    return;
+  }
+
+  if (shell !== 'bash' && shell !== 'zsh') {
+    throw new Error('Missing or unsupported shell. Usage: mm-coder completion <bash|zsh|sessions>');
+  }
+
+  if (shell === 'bash') {
+    process.stdout.write(renderBashCompletion());
+    return;
+  }
+
+  process.stdout.write(renderZshCompletion());
 }
 
 async function handleStart(args: Record<string, string | undefined>) {
