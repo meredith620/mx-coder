@@ -87,10 +87,36 @@ describe('Daemon CRUD commands', () => {
     expect(res.error!.code).toBe('SESSION_ALREADY_EXISTS');
   });
 
-  test('remove 不存在的 session 返回 SESSION_NOT_FOUND', async () => {
-    const res = await client.send('remove', { name: 'ghost' });
-    expect(res.ok).toBe(false);
-    expect(res.error!.code).toBe('SESSION_NOT_FOUND');
+
+  test('remove channel 绑定 session 时仅做本地解绑/删除，不做远端硬删除前提下可成功完成', async () => {
+    await client.send('create', { name: 'remove-channel', workdir: '/tmp', cli: 'claude-code' });
+    daemon.registry.bindIM('remove-channel', {
+      plugin: 'mattermost',
+      bindingKind: 'channel',
+      threadId: '',
+      channelId: 'channel-1',
+    } as any);
+
+    const removeRes = await client.send('remove', { name: 'remove-channel' });
+    expect(removeRes.ok).toBe(true);
+    expect(daemon.registry.get('remove-channel')).toBeUndefined();
+  });
+
+  test('status 返回 session 实际绑定空间类型', async () => {
+    await client.send('create', { name: 'status-channel', workdir: '/tmp', cli: 'claude-code' });
+    daemon.registry.bindIM('status-channel', {
+      plugin: 'mattermost',
+      bindingKind: 'channel',
+      threadId: '',
+      channelId: 'channel-99',
+    } as any);
+
+    const statusRes = await client.send('status', {});
+    expect(statusRes.ok).toBe(true);
+    const session = (statusRes.data!.sessions as any[]).find((s: any) => s.name === 'status-channel');
+    expect(session.imBindings).toHaveLength(1);
+    expect(session.imBindings[0].bindingKind).toBe('channel');
+    expect(session.imBindings[0].channelId).toBe('channel-99');
   });
 });
 

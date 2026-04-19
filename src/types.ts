@@ -29,8 +29,11 @@ export const ALL_SESSION_STATUSES: readonly SessionStatus[] = [
   'error',
 ] as const;
 
+export type ConversationBindingKind = 'thread' | 'channel';
+
 export interface IMBinding {
   plugin: string;
+  bindingKind: ConversationBindingKind;
   threadId: string;
   channelId?: string;
   createdAt: string;

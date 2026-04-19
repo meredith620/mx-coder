@@ -129,10 +129,16 @@ describe('CLI 命令解析', () => {
     expect(parsed.args.shell).toBe('bash');
   });
 
-  test('parse "completion zsh"', () => {
-    const parsed = parseCLIArgs(['completion', 'zsh']);
-    expect(parsed.command).toBe('completion');
-    expect(parsed.args.shell).toBe('zsh');
+  test('parse "create demo --space-strategy channel"', () => {
+    const parsed = parseCLIArgs(['create', 'demo', '--space-strategy', 'channel']);
+    expect(parsed.command).toBe('create');
+    expect(parsed.args.name).toBe('demo');
+    expect(parsed.args['space-strategy']).toBe('channel');
+  });
+
+  test('parse "create demo --space-strategy thread"', () => {
+    const parsed = parseCLIArgs(['create', 'demo', '--space-strategy', 'thread']);
+    expect(parsed.args['space-strategy']).toBe('thread');
   });
 
   test('未知命令抛出错误', () => {

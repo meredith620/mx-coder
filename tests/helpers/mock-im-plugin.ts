@@ -12,6 +12,13 @@ interface TypingRecord {
   at: number;
 }
 
+interface CreatedConversationRecord {
+  channelId: string;
+  kind: 'thread' | 'channel';
+  teamId?: string;
+  isPrivate?: boolean;
+}
+
 export class MockIMPlugin implements IMPlugin {
   private _handlers: Array<(msg: IncomingMessage) => void> = [];
   sent: SentRecord[] = [];
@@ -19,6 +26,7 @@ export class MockIMPlugin implements IMPlugin {
   liveMessageTargets = new Map<string, MessageTarget>();
   approvalRequests: ApprovalRequest[] = [];
   typingCalls: TypingRecord[] = [];
+  createdConversations: CreatedConversationRecord[] = [];
   failCreateLiveMessage = false;
   createLiveMessageError = new Error('createLiveMessage failed');
 
@@ -52,7 +60,19 @@ export class MockIMPlugin implements IMPlugin {
     const text = content.kind === 'text' ? content.text : content.kind === 'markdown' ? content.markdown : '';
     this.liveMessages.set(msgId, text);
     this.liveMessageTargets.set(msgId, target);
+    this.createdConversations.push({ channelId: target.channelId ?? '', kind: 'thread' });
     return msgId;
+  }
+
+  async createChannelConversation(input: { channelId: string; teamId: string; isPrivate: boolean; }): Promise<string> {
+    const conversationId = uuidv4();
+    this.createdConversations.push({
+      channelId: input.channelId,
+      kind: 'channel',
+      teamId: input.teamId,
+      isPrivate: input.isPrivate,
+    });
+    return conversationId;
   }
 
   async updateMessage(messageId: string, content: MessageContent): Promise<void> {

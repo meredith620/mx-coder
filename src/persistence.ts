@@ -89,7 +89,10 @@ export class PersistenceStore {
         attachedPid: null,
         imWorkerPid: null,
         imWorkerCrashCount: 0,
-        imBindings: p.imBindings ?? [],
+        imBindings: (p.imBindings ?? []).map((binding) => ({
+          ...binding,
+          bindingKind: binding.bindingKind ?? 'thread',
+        })),
         messageQueue: p.messageQueue ?? [],
         createdAt: p.createdAt ? new Date(p.createdAt) : now,
         lastActivityAt: p.lastActivityAt ? new Date(p.lastActivityAt) : now,

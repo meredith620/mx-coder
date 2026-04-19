@@ -63,42 +63,31 @@ describe('TUI 渲染器', () => {
   });
 
 
-  test('renderTuiOverview 渲染 queue length 与高亮状态标记', () => {
+
+  test('renderTuiOverview 显示 session 实际空间类型', () => {
     const output = renderTuiOverview([
       {
-        name: 'sess-approval',
-        status: 'approval_pending',
-        runtimeState: 'waiting_approval',
+        name: 'thread-sess',
+        status: 'idle',
+        runtimeState: 'ready',
         workdir: '/tmp/a',
         lastActivityAt: new Date(),
-        queueLength: 2,
+        queueLength: 0,
+        bindingKind: 'thread',
       },
       {
-        name: 'sess-attached',
-        status: 'attached',
-        runtimeState: 'attached_terminal',
+        name: 'channel-sess',
+        status: 'idle',
+        runtimeState: 'ready',
         workdir: '/tmp/b',
         lastActivityAt: new Date(),
         queueLength: 0,
-      },
-      {
-        name: 'sess-recovering',
-        status: 'recovering',
-        runtimeState: 'recovering',
-        workdir: '/tmp/c',
-        lastActivityAt: new Date(),
-        queueLength: 1,
+        bindingKind: 'channel',
       },
     ] as any);
 
-    expect(output).toContain('QUEUE');
-    expect(output).toContain('sess-approval');
-    expect(output).toContain('2');
-    expect(output).toContain('[APPROVAL]');
-    expect(output).toContain('sess-attached');
-    expect(output).toContain('[ATTACHED]');
-    expect(output).toContain('sess-recovering');
-    expect(output).toContain('[RECOVERING]');
+    expect(output).toContain('thread');
+    expect(output).toContain('channel');
   });
 
 

@@ -9,6 +9,7 @@ export interface SessionSummary {
   lastActivityAt: Date;
   runtimeState?: RuntimeState;
   queueLength?: number;
+  bindingKind?: 'thread' | 'channel';
   connectionHealth?: {
     wsHealthy?: boolean;
     subscriptionHealthy?: boolean;
@@ -78,25 +79,46 @@ export function createTuiStateStore(initialSessions: SessionSummary[] = []): Tui
         : previous?.queueLength;
       const connectionHealthRaw = event.data.connectionHealth;
       const connectionHealth = typeof connectionHealthRaw === 'object' && connectionHealthRaw !== null
-        ? {
-            wsHealthy: typeof (connectionHealthRaw as { wsHealthy?: unknown }).wsHealthy === 'boolean'
-              ? (connectionHealthRaw as { wsHealthy: boolean }).wsHealthy
-              : previous?.connectionHealth?.wsHealthy,
-            subscriptionHealthy: typeof (connectionHealthRaw as { subscriptionHealthy?: unknown }).subscriptionHealthy === 'boolean'
-              ? (connectionHealthRaw as { subscriptionHealthy: boolean }).subscriptionHealthy
-              : previous?.connectionHealth?.subscriptionHealthy,
-          }
+        ? (() => {
+            const next: { wsHealthy?: boolean; subscriptionHealthy?: boolean } = {};
+            if (typeof (connectionHealthRaw as { wsHealthy?: unknown }).wsHealthy === 'boolean') {
+              next.wsHealthy = (connectionHealthRaw as { wsHealthy: boolean }).wsHealthy;
+            } else if (previous?.connectionHealth?.wsHealthy !== undefined) {
+              next.wsHealthy = previous.connectionHealth.wsHealthy;
+            }
+            if (typeof (connectionHealthRaw as { subscriptionHealthy?: unknown }).subscriptionHealthy === 'boolean') {
+              next.subscriptionHealthy = (connectionHealthRaw as { subscriptionHealthy: boolean }).subscriptionHealthy;
+            } else if (previous?.connectionHealth?.subscriptionHealthy !== undefined) {
+              next.subscriptionHealthy = previous.connectionHealth.subscriptionHealthy;
+            }
+            return Object.keys(next).length > 0 ? next : undefined;
+          })()
         : previous?.connectionHealth;
+      const bindingKindRaw = event.data.bindingKind;
+      const bindingKind = bindingKindRaw === 'thread' || bindingKindRaw === 'channel'
+        ? bindingKindRaw
+        : previous?.bindingKind;
 
-      sessions.set(name, {
+      const nextSession: SessionSummary = {
         name,
         status: status ?? previous?.status ?? 'idle',
-        runtimeState: runtimeState ?? previous?.runtimeState,
         workdir,
         lastActivityAt,
-        queueLength,
-        connectionHealth,
-      });
+      };
+      if (runtimeState ?? previous?.runtimeState) {
+        nextSession.runtimeState = (runtimeState ?? previous?.runtimeState)!;
+      }
+      if (queueLength !== undefined) {
+        nextSession.queueLength = queueLength;
+      }
+      if (connectionHealth !== undefined) {
+        nextSession.connectionHealth = connectionHealth;
+      }
+      if (bindingKind !== undefined) {
+        nextSession.bindingKind = bindingKind;
+      }
+
+      sessions.set(name, nextSession);
     },
   };
 }
@@ -202,6 +224,7 @@ export function renderTuiOverview(sessions: SessionSummary[]): string {
     if (s.status === 'approval_pending') markers.push('[APPROVAL]');
     if (s.status === 'attached') markers.push('[ATTACHED]');
     if (s.status === 'recovering') markers.push('[RECOVERING]');
+    if (s.bindingKind) markers.push(`[${s.bindingKind}]`);
     const markerLabel = markers.join(' ');
     lines.push(`  ${s.name.padEnd(24)} ${runtimeLabel.padEnd(20)} ${queueLabel} ${markerLabel}`.trimEnd());
   }

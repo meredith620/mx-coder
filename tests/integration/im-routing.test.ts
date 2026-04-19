@@ -136,23 +136,28 @@ describe('Daemon IM 路由', () => {
     expect((mockIM.sent[1].content as any).text).toContain('创建独立 thread');
   });
 
-  test('/open <sessionName> 在顶层消息中对已绑定 session 发送锚点', async () => {
+  test('/open <sessionName> 在 channel 模式下通过主 channel 创建独立 private channel', async () => {
     const mockIM = new MockIMPlugin();
+    (mockIM as any).createChannelConversation = async ({ channelId, teamId, isPrivate }: any) => {
+      mockIM.createdConversations.push({ channelId, kind: 'channel', teamId, isPrivate });
+      return 'channel-conv-1';
+    };
     (daemon as any)._imPlugin = mockIM;
     (daemon as any)._imPluginName = 'mattermost';
+    (daemon as any)._imPluginConfig = { spaceStrategy: 'channel', teamId: 'team-1' };
 
-    daemon.registry.create('demo', { workdir: '/tmp', cliPlugin: 'claude-code' });
-    daemon.registry.bindIM('demo', { plugin: 'mattermost', threadId: 'target-thread-99', channelId: 'ch-bound' });
+    daemon.registry.create('demo-channel', { workdir: '/tmp', cliPlugin: 'claude-code' });
 
-
-    const msg = makeMsg({ text: '/open demo', threadId: 'root-post-1', isTopLevel: true });
+    const msg = makeMsg({ text: '/open demo-channel', threadId: 'root-post-1', isTopLevel: true });
     await (daemon as any)._handleIncomingIMMessage(msg, 'ch1');
 
-    expect(mockIM.sent).toHaveLength(2);
-    expect(mockIM.sent[0].target.threadId).toBe('target-thread-99');
-    expect(mockIM.sent[1].target.threadId).toBe('');
-    expect((mockIM.sent[1].content as any).text).toContain('发送定位消息');
+    expect(mockIM.createdConversations).toHaveLength(1);
+    expect(mockIM.createdConversations[0]).toMatchObject({ kind: 'channel', teamId: 'team-1', isPrivate: true });
+    const binding = daemon.registry.get('demo-channel')!.imBindings.find((item: any) => item.plugin === 'mattermost');
+    expect(binding?.bindingKind).toBe('channel');
+    expect(binding?.channelId).toBe('channel-conv-1');
   });
+
 
   test('/open <sessionName> 在 thread 中对已绑定 session 发送锚点', async () => {
     const mockIM = new MockIMPlugin();
@@ -301,19 +306,19 @@ describe('Daemon IM 路由', () => {
     expect((mockIM.sent[0].content as any).text).toContain('已强制接管会话 demo-force');
   });
 
-  test('普通消息入队到对应 session', async () => {
+  test('普通文本在 channel 模式下自动建 session 时记录 channel 绑定', async () => {
     const mockIM = new MockIMPlugin();
     (daemon as any)._imPlugin = mockIM;
     (daemon as any)._imPluginName = 'mattermost';
+    (daemon as any)._imPluginConfig = { spaceStrategy: 'channel', teamId: 'team-1' };
 
-    const msg = makeMsg({ text: 'hello world', threadId: 'normal-thread' });
-    await (daemon as any)._handleIncomingIMMessage(msg, 'ch1');
-
-    const session = daemon.registry.getByIMThread('mattermost', 'normal-thread');
+    const session = (daemon as any)._getOrCreateSessionForConversation('channel-main-1', 'mattermost', 'channel');
     expect(session).toBeTruthy();
-    expect(session!.messageQueue).toHaveLength(1);
-    expect(session!.messageQueue[0].content).toBe('hello world');
+    const binding = session.imBindings.find((item: any) => item.plugin === 'mattermost');
+    expect(binding?.bindingKind).toBe('channel');
+    expect(binding?.channelId).toBe('channel-main-1');
   });
+
 });
 
 // ── Dispatcher thread routing tests ───────────────────────────────────────

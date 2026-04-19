@@ -21,6 +21,7 @@ export interface DaemonOptions {
   enableIM?: boolean;
   imPluginName?: string;
   defaultCLIPluginName?: string;
+  imPluginConfig?: Record<string, unknown>;
 }
 
 export class Daemon {
@@ -35,6 +36,7 @@ export class Daemon {
   private _imWorkerManager: IMWorkerManager | null = null;
   private _approvalManager: ApprovalManager | null = null;
   private _defaultCLIPluginName: string;
+  private _imPluginConfig: Record<string, unknown>;
 
   private _debugLog(payload: Record<string, unknown>): void {
     try {
@@ -57,6 +59,7 @@ export class Daemon {
       timeoutSeconds: 300,
     });
     this._defaultCLIPluginName = opts.defaultCLIPluginName ?? getDefaultCLIPluginName();
+    this._imPluginConfig = opts.imPluginConfig ?? {};
     this._registerHandlers();
 
     // Initialize IM if enabled
@@ -215,7 +218,12 @@ export class Daemon {
     }
 
     // E 类：普通文本消息，进入 Claude 处理流程
-    const session = this._getOrCreateSessionForThread(msg.threadId, msg.plugin);
+    const conversationKind = this._getMattermostConversationKind();
+    const session = this._getOrCreateSessionForConversation(
+      conversationKind === 'channel' ? (msg.channelId ?? channelId) : msg.threadId,
+      msg.plugin,
+      conversationKind,
+    );
     if (session.status === 'attached' || session.status === 'takeover_pending') {
       await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
         kind: 'text',
@@ -281,13 +289,18 @@ export class Daemon {
   private _renderSessionStatus(session: Session, pluginName: string): string {
     const binding = session.imBindings.find((item) => item.plugin === pluginName) ?? session.imBindings[0];
     const pending = session.messageQueue.filter(m => m.status === 'pending').length;
+    const bindingLabel = !binding
+      ? '未绑定'
+      : binding.bindingKind === 'channel'
+        ? `channel:${binding.channelId ?? 'unknown'}`
+        : `thread:${binding.threadId}`;
     const lines = [
       `**会话：** \`${session.name}\``,
       `**状态：** ${session.status}`,
       `**运行态：** ${session.runtimeState ?? 'cold'}`,
       `**CLI 插件：** ${session.cliPlugin}`,
       `**工作目录：** ${session.workdir}`,
-      `**绑定 thread：** ${binding?.threadId ?? '未绑定'}`,
+      `**绑定空间：** ${bindingLabel}`,
       `**待处理消息：** ${pending}`,
       `**创建时间：** ${new Date(session.createdAt).toLocaleString()}`,
     ];
@@ -307,17 +320,33 @@ export class Daemon {
     ].join('\n');
   }
 
-  private _getOrCreateSessionForThread(threadId: string, plugin: string) {
-    const existing = this.registry.getByIMThread(plugin, threadId);
+  private _getMattermostConversationKind(): 'thread' | 'channel' {
+    const strategy = this._imPluginConfig['spaceStrategy'];
+    return strategy === 'channel' ? 'channel' : 'thread';
+  }
+
+  private _getOrCreateSessionForConversation(conversationId: string, plugin: string, bindingKind: 'thread' | 'channel') {
+    const existing = bindingKind === 'thread'
+      ? this.registry.getByIMThread(plugin, conversationId)
+      : this.registry.list().find((session) => session.imBindings.some((binding) => binding.plugin === plugin && binding.bindingKind === 'channel' && binding.channelId === conversationId));
     if (existing) return existing;
 
-    const name = this._makeSessionName(threadId);
+    const name = this._makeSessionName(conversationId);
     const session = this.registry.create(name, {
       workdir: process.cwd(),
       cliPlugin: this._defaultCLIPluginName,
     });
-    this.registry.bindIM(name, { plugin, threadId });
+    this.registry.bindIM(name, {
+      plugin,
+      bindingKind,
+      threadId: bindingKind === 'thread' ? conversationId : '',
+      ...(bindingKind === 'channel' ? { channelId: conversationId } : {}),
+    });
     return session;
+  }
+
+  private _getOrCreateSessionForThread(threadId: string, plugin: string) {
+    return this._getOrCreateSessionForConversation(threadId, plugin, 'thread');
   }
 
   private _makeSessionName(threadId: string): string {
@@ -339,8 +368,12 @@ export class Daemon {
 
     const lines = sessions.map((session) => {
       const binding = session.imBindings.find((item) => item.plugin === pluginName);
-      const thread = binding ? binding.threadId : '未绑定';
-      return `- ${session.name} (${session.status}, cli=${session.cliPlugin}) thread=${thread}`;
+      const bindingLabel = !binding
+        ? '未绑定'
+        : binding.bindingKind === 'channel'
+          ? `channel=${binding.channelId}`
+          : `thread=${binding.threadId}`;
+      return `- ${session.name} (${session.status}, cli=${session.cliPlugin}) ${bindingLabel}`;
     });
 
     return [
@@ -465,29 +498,75 @@ export class Daemon {
     });
 
     if (binding) {
-      // 已有绑定：尝试向目标 thread 发锚点
+      // 已有绑定：尝试向目标会话空间发锚点
       try {
         await imPlugin.sendMessage({
           plugin: msg.plugin,
           channelId: binding.channelId ?? channelId,
-          threadId: binding.threadId,
+          threadId: binding.bindingKind === 'channel' ? '' : binding.threadId,
         }, {
           kind: 'text',
-          text: `已定位到会话 ${sessionName}。请直接在这个 thread 中继续对话。`,
+          text: `已定位到会话 ${sessionName}。请直接在这个${binding.bindingKind === 'channel' ? ' channel' : ' thread'}中继续对话。`,
         });
 
         await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
           kind: 'text',
-          text: `已在会话 ${sessionName} 的 thread 中发送定位消息。`,
+          text: `已在会话 ${sessionName} 的${binding.bindingKind === 'channel' ? ' channel' : ' thread'}中发送定位消息。`,
         });
         return;
       } catch (err) {
-        // 旧 thread 可能已不存在，移除旧绑定，走下面的创建新 thread 流程
-        console.error(`[/open] Failed to send to existing thread ${binding.threadId}, removing stale binding: ${(err as Error).message}`);
+        console.error(`[/open] Failed to send to existing ${binding.bindingKind} ${binding.bindingKind === 'channel' ? binding.channelId : binding.threadId}, removing stale binding: ${(err as Error).message}`);
         const idx = session.imBindings.indexOf(binding);
         if (idx >= 0) session.imBindings.splice(idx, 1);
         if (this._store) void this._store.flush();
       }
+    }
+
+    const strategy = this._getMattermostConversationKind();
+    if (strategy === 'channel') {
+      const createChannelConversation = (imPlugin as IMPlugin & { createChannelConversation?: (input: { channelId: string; teamId: string; isPrivate: boolean }) => Promise<string> }).createChannelConversation;
+      const teamId = this._imPluginConfig['teamId'];
+      if (typeof createChannelConversation !== 'function' || typeof teamId !== 'string') {
+        await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+          kind: 'text',
+          text: `为 ${sessionName} 创建 channel 失败：当前配置或插件能力不完整。`,
+        });
+        return;
+      }
+
+      let newChannelId: string;
+      try {
+        newChannelId = await createChannelConversation({ channelId, teamId, isPrivate: true });
+      } catch (err) {
+        await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+          kind: 'text',
+          text: `为 ${sessionName} 创建 channel 失败：${(err as Error).message}`,
+        });
+        return;
+      }
+
+      this.registry.bindIM(sessionName, {
+        plugin: msg.plugin,
+        bindingKind: 'channel',
+        threadId: '',
+        channelId: newChannelId,
+      });
+      if (this._store) void this._store.flush();
+
+      await imPlugin.sendMessage({
+        plugin: msg.plugin,
+        channelId: newChannelId,
+        threadId: '',
+      }, {
+        kind: 'text',
+        text: `已定位到会话 ${sessionName}。请直接在这个 channel 中继续对话。`,
+      });
+
+      await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+        kind: 'text',
+        text: `已为会话 ${sessionName} 创建独立 private channel，并在目标 channel 发送定位消息。`,
+      });
+      return;
     }
 
     // 无绑定（或旧绑定已失效）：为 session 创建新 thread
@@ -527,6 +606,7 @@ export class Daemon {
 
     this.registry.bindIM(sessionName, {
       plugin: msg.plugin,
+      bindingKind: 'thread',
       threadId: newThreadId,
       channelId,
     });
@@ -805,6 +885,7 @@ export class Daemon {
       initState: s.initState,
       workdir: s.workdir,
       cliPlugin: s.cliPlugin,
+      imBindings: s.imBindings,
       createdAt: s.createdAt,
     };
   }

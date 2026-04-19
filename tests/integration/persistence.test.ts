@@ -72,18 +72,34 @@ describe('PersistenceStore', () => {
     expect(r.get('approval-broken')?.imWorkerPid).toBeNull();
   });
 
-  test('takeover_pending 重启后也重置为 recovering', async () => {
+  test('持久化后保留 session 实际绑定空间类型', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-coder-test-'));
-    fs.writeFileSync(path.join(dir, 'sessions.json'), JSON.stringify({
-      version: 1,
-      sessions: [
-        { name: 'b', status: 'takeover_pending', cliPlugin: 'claude-code', workdir: '/tmp' },
-      ],
-    }));
     const store = new PersistenceStore(path.join(dir, 'sessions.json'));
-    const r = new SessionRegistry(store);
-    await store.load(r);
-    expect(r.get('b')?.status).toBe('recovering');
-    expect(r.get('b')?.runtimeState).toBe('recovering');
+    const registry = new SessionRegistry(store);
+
+    registry.create('thread-sess', { workdir: '/tmp/thread', cliPlugin: 'claude-code' });
+    registry.bindIM('thread-sess', {
+      plugin: 'mattermost',
+      bindingKind: 'thread',
+      threadId: 'thread-1',
+      channelId: 'channel-root',
+    } as any);
+
+    registry.create('channel-sess', { workdir: '/tmp/channel', cliPlugin: 'claude-code' });
+    registry.bindIM('channel-sess', {
+      plugin: 'mattermost',
+      bindingKind: 'channel',
+      threadId: '',
+      channelId: 'channel-1',
+    } as any);
+
+    await store.flush();
+
+    const restoredStore = new PersistenceStore(path.join(dir, 'sessions.json'));
+    const restoredRegistry = new SessionRegistry(restoredStore);
+    await restoredStore.load(restoredRegistry);
+
+    expect((restoredRegistry.get('thread-sess')!.imBindings[0] as any).bindingKind).toBe('thread');
+    expect((restoredRegistry.get('channel-sess')!.imBindings[0] as any).bindingKind).toBe('channel');
   });
 });

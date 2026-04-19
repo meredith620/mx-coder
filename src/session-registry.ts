@@ -245,15 +245,19 @@ export class SessionRegistry {
     s.attachedPid = pid;
   }
 
-  bindIM(name: string, binding: Omit<IMBinding, 'createdAt'>): void {
+  bindIM(name: string, binding: Omit<IMBinding, 'createdAt' | 'bindingKind'> & { bindingKind?: IMBinding['bindingKind'] }): void {
     const s = this._getOrThrow(name);
-    const entry: IMBinding = { ...binding, createdAt: new Date().toISOString() };
+    const entry: IMBinding = {
+      ...binding,
+      bindingKind: binding.bindingKind ?? 'thread',
+      createdAt: new Date().toISOString(),
+    };
     s.imBindings.push(entry);
   }
 
   getByIMThread(plugin: string, threadId: string): Session | undefined {
     for (const s of this._sessions.values()) {
-      if (s.imBindings.some(b => b.plugin === plugin && b.threadId === threadId)) {
+      if (s.imBindings.some(b => b.plugin === plugin && b.bindingKind === 'thread' && b.threadId === threadId)) {
         return s;
       }
     }

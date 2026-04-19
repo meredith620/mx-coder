@@ -8,6 +8,8 @@ export interface MattermostConfig {
   url: string;
   token: string;
   channelId: string;
+  spaceStrategy?: 'thread' | 'channel';
+  teamId?: string;
   /** Bot user ID, resolved during connect() */
   botUserId?: string;
   /** WebSocket reconnect interval in ms (default: 5000) */
@@ -46,6 +48,7 @@ export function getMattermostConfigGuide(configPath = getDefaultMattermostConfig
           url: 'https://your-mattermost-server.example.com',
           token: 'your-bot-token-here',
           channelId: 'your-channel-id-here',
+          spaceStrategy: 'thread',
           reconnectIntervalMs: 5000,
         },
       },
@@ -102,10 +105,30 @@ export function loadMattermostConfig(configPath = getDefaultMattermostConfigPath
     reconnectIntervalMs = reconnectRaw;
   }
 
+  const spaceStrategyRaw = raw['spaceStrategy'];
+  let spaceStrategy: 'thread' | 'channel' | undefined;
+  if (spaceStrategyRaw !== undefined) {
+    if (spaceStrategyRaw !== 'thread' && spaceStrategyRaw !== 'channel') {
+      throw new Error(`Mattermost config field 'spaceStrategy' must be 'thread' or 'channel' in ${configPath}`);
+    }
+    spaceStrategy = spaceStrategyRaw;
+  }
+
+  const teamIdRaw = raw['teamId'];
+  let teamId: string | undefined;
+  if (teamIdRaw !== undefined) {
+    teamId = requireNonEmptyString(teamIdRaw, 'teamId', configPath);
+  }
+  if (spaceStrategy === 'channel' && !teamId) {
+    throw new Error(`Mattermost config field 'teamId' is required when spaceStrategy=channel in ${configPath}`);
+  }
+
   return {
     url,
     token,
     channelId,
+    ...(spaceStrategy !== undefined ? { spaceStrategy } : {}),
+    ...(teamId !== undefined ? { teamId } : {}),
     ...(reconnectIntervalMs !== undefined ? { reconnectIntervalMs } : {}),
   };
 }
