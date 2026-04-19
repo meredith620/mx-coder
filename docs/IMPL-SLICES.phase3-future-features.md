@@ -151,6 +151,7 @@
 ## 3.3 功能 1 的 TDD slices（以“先 spike 再实现”为前提）
 
 ### C1 — 会话空间策略抽象与持久化
+**状态**：已完成
 **目标**：让 thread/channel 成为 Mattermost 的显式创建策略，并记录每个 session 的实际空间类型。  
 **依赖**：resident worker 主链稳定
 
@@ -175,6 +176,7 @@
 ---
 
 ### C2 — Mattermost 默认配置与单次 override
+**状态**：部分完成（当前已完成持久配置 `spaceStrategy` / `teamId` 校验；CLI/TUI 单次 override 仍待补）
 **目标**：支持持久配置 `spaceStrategy`，并支持 CLI/TUI 单次 override。  
 **依赖**：C1
 
@@ -202,6 +204,7 @@
 ---
 
 ### C3 — `/open` 与 IM 自动建 session 支持两种策略
+**状态**：已完成（当前范围）
 **目标**：在 thread/channel 两种模式下，`/open` 和普通文本自动建 session 都遵循当前策略。  
 **依赖**：C2
 
@@ -227,6 +230,7 @@
 ---
 
 ### C4 — channel 模式资源清理与展示闭环
+**状态**：已完成（当前范围）
 **目标**：channel 模式下 remove/archive/status/TUI 展示都能正确反映和处理会话空间。  
 **依赖**：C3
 
@@ -272,6 +276,23 @@
 - 没有 shell completion 方案
 - 也没有内置交互式 readline CLI
 
+### 当前状态
+- CLI completion 已完成：
+  - T1 `completion bash|zsh`
+  - T2 `completion sessions` 动态 session 名补全
+  - T3 README / DEV-OPS 安装说明
+- TUI 扩展已完成：
+  - U1 订阅客户端与本地 state store
+  - U2 只读总览面板
+  - U3 交互式 session 管理动作（除 attach）
+  - U4 busy/idle 与连接健康摘要渲染
+- Mattermost `spaceStrategy` 已完成当前规划范围实现：
+  - C1 bindingKind 持久化
+  - C2 Mattermost 配置 `spaceStrategy` / `teamId`
+  - C3 `/open` 与自动建 session 按策略路由
+  - C4 status / TUI 展示与 channel 绑定清理闭环
+- 已完成全量回归：`npm test` 通过，`npm run build` 通过
+
 ### 推荐方案
 不要发明自己的 shell 解析补全协议。优先考虑：
 
@@ -295,6 +316,7 @@
 ## 4.3 功能 2 的 TDD slices
 
 ### T1 — completion 子命令与静态补全骨架
+**状态**：已完成
 **目标**：CLI 能输出 shell completion 所需元信息。  
 **依赖**：当前 CLI 命令面稳定
 
@@ -317,6 +339,7 @@
 ---
 
 ### T2 — 动态 session 名补全
+**状态**：已完成
 **目标**：补全 attach/remove/status 等命令的 session 名。  
 **依赖**：T1
 
@@ -337,6 +360,7 @@
 ---
 
 ### T3 — 文档与安装指引
+**状态**：已完成
 **目标**：README / DEV-OPS 提供 shell completion 安装说明。  
 **依赖**：T2
 
@@ -392,6 +416,7 @@ TUI 应定位为：
 ## 5.3 功能 3 的 TDD slices
 
 ### U1 — TUI 数据模型与订阅客户端
+**状态**：已完成
 **目标**：TUI 能连接 daemon，订阅状态，并维护本地 session 视图。  
 **依赖**：resident worker 状态语义稳定
 
@@ -414,6 +439,7 @@ TUI 应定位为：
 ---
 
 ### U2 — TUI 只读面板
+**状态**：已完成
 **目标**：先把总览面板做稳。  
 **依赖**：U1
 
@@ -435,6 +461,7 @@ TUI 应定位为：
 ---
 
 ### U3 — TUI 交互式 session 管理动作
+**状态**：已完成
 **目标**：支持除 attach 外尽可能多的 CLI session 管理能力。  
 **依赖**：U2
 
@@ -460,6 +487,7 @@ TUI 应定位为：
 ---
 
 ### U4 — TUI 可观测性增强
+**状态**：已完成
 **目标**：把 resident worker 时代的重要状态都暴露出来。  
 **依赖**：U3
 
