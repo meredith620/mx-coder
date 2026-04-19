@@ -109,6 +109,7 @@ mm-coder 的状态分三层：
    - idle = `cold | ready`
    - 但 UI/CLI 详细状态展示不得把 `cold` 与 `ready` 混成同一个状态文案
 33. `typing indicator` 若实现：仅允许在 `runtimeState = running` 时发送；`waiting_approval`、`ready`、`cold`、`recovering` 不得发送
+34. 即使 `runtimeState = running`，若当前轮在静默窗口内未再收到新的 Claude 流事件，也应停止 typing 续发，避免把“等待下一步指令”误判为持续输入
 
 ---
 

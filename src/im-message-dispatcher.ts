@@ -19,6 +19,7 @@ interface ActiveTurn {
   streamToIM: StreamToIM;
   resolve: () => void;
   reject: (error: Error) => void;
+  lastEventAt: number;
 }
 
 export interface IMMessageDispatcherOptions {
@@ -29,6 +30,7 @@ export interface IMMessageDispatcherOptions {
   workerManager: IMWorkerManager;
   pollIntervalMs?: number;
   typingIntervalMs?: number;
+  typingQuietWindowMs?: number;
   maxRetries?: number;
   onSessionImDone?: (sessionName: string) => void;
 }
@@ -39,6 +41,7 @@ export interface IMMessageDispatcherOptions {
  */
 export class IMMessageDispatcher {
   private static readonly TYPING_INTERVAL_MS = 3000;
+  private static readonly TYPING_QUIET_WINDOW_MS = 5000;
   private _opts: IMMessageDispatcherOptions;
   private _running = false;
   private _timer: ReturnType<typeof setTimeout> | null = null;
@@ -150,8 +153,9 @@ export class IMMessageDispatcher {
     try {
       const rawEvent = JSON.parse(line) as Record<string, unknown>;
       const event = this._normalizeEvent(rawEvent);
+      activeTurn.lastEventAt = Date.now();
       return activeTurn.streamToIM.onEvent(event as Parameters<typeof activeTurn.streamToIM.onEvent>[0]).then(() => {
-        if (event.type === 'result' || event.type === 'error') {
+        if (event.type === 'result') {
           this._activeTurns.delete(sessionName);
           activeTurn.resolve();
         }
@@ -207,6 +211,12 @@ export class IMMessageDispatcher {
         return;
       }
 
+      const activeTurn = this._activeTurns.get(sessionName);
+      const quietWindowMs = this._opts.typingQuietWindowMs ?? IMMessageDispatcher.TYPING_QUIET_WINDOW_MS;
+      if (!activeTurn || activeTurn.messageId !== message.messageId || Date.now() - activeTurn.lastEventAt > quietWindowMs) {
+        return;
+      }
+
       try {
         await plugin.sendTyping!(target);
       } catch (error) {
@@ -255,6 +265,7 @@ export class IMMessageDispatcher {
           turnResolved = true;
           reject(error);
         },
+        lastEventAt: Date.now(),
       });
     });
 

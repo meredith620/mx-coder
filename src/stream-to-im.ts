@@ -72,11 +72,16 @@ export class StreamToIM {
       return;
     }
 
-    if (event.type === 'result' || event.type === 'error') {
+    if (event.type === 'result') {
       await this._flush();
       this._messageId = null;
       this._turnMessageId = null;
       this._buffer = '';
+      return;
+    }
+
+    if (event.type === 'error') {
+      await this._flush();
     }
   }
 

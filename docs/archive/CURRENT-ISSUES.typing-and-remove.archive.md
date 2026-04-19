@@ -53,6 +53,20 @@
 - **typing REST 路径也已修正到官方真值并通过测试**
 - `/users/me/typing` 只能作为历史实现路径说明，不能再写成官方已确认正确
 
+### 补充修复：typing 状态误判
+后续又发现一个更细的状态语义问题：
+- 当 Claude 已暂时停止产出、正在等待下一步输入，但当前轮尚未被粗粒度地判定结束时
+- mm-coder 仍可能持续续发 Mattermost typing，造成人工观察上的“Claude 已停，但 Mattermost 仍显示 typing”
+
+本轮已做的最小修复：
+- typing 续发除了要求 `runtimeState=running`，还要求“最近仍有新的 Claude 流事件”
+- 若超过静默窗口未再收到新事件，则停止后续 typing 续发
+- `error` 事件不再被当作当前轮已完成的提交边界；只有 `result` 仍是完成边界
+
+这次修复的作用是：
+- 不再把“长时间静默等待下一步指令”误报成持续 typing
+- 同时避免因为瞬时 `error` 事件而过早结束当前 turn
+
 ### 已覆盖测试
 - `tests/unit/mattermost-plugin.test.ts`
   - `sendTyping` 使用官方 REST endpoint 与 bot user id
@@ -60,6 +74,9 @@
   - `runtimeState=running` 时按节流发送 typing
   - 非 running 状态不发送 typing
   - 消息完成后停止续发
+  - 长时间无新流事件时停止 typing 续发，避免误报持续输入
+  - `error` 事件不会提前结束当前 turn
+
 
 ---
 
@@ -111,6 +128,7 @@
 当前剩余要求主要是文档维护纪律：
 - 不要再把旧实现路径 `/api/v4/users/me/typing` 写成官方真值
 - 若未来要重新讨论该路径，只能在拿到官方 alias 证据后进行
+- 若要从根上彻底消除“等待下一步指令”与“仍在处理但静默”的混淆，还需继续落地 `lastTurnOutcome` / `interruptReason` / `lastResultAt` 等补充字段
 
 若后续需要继续增强 Mattermost 健壮性，应转到：
 - `docs/MATTERMOST-GAPS.md`

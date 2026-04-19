@@ -562,13 +562,67 @@ describe('IMMessageDispatcher 动态 thread 路由', () => {
     expect(mockIM.typingCalls.length).toBe(callsAfterRunning);
   }, 10000);
 
-  test('非 running 状态不发送 typing', async () => {
-    const mockCli = path.join(tmpDir, 'typing-blocked.sh');
-    fs.writeFileSync(mockCli, '#!/bin/sh\nsleep 60\n', { mode: 0o755 });
+  test('长时间无新流事件时应停止 typing 续发，避免误报持续输入', async () => {
+    const mockCli = path.join(tmpDir, 'typing-quiet-window.sh');
+    fs.writeFileSync(mockCli, [
+      '#!/bin/sh',
+      'while IFS= read -r line; do',
+      "  printf '%s\\n' '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"partial\"}]}}'",
+      '  sleep 0.45',
+      "  printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"done\"}'",
+      'done',
+    ].join('\n'), { mode: 0o755 });
 
-    const session = registry.create('sess-typing-blocked', { workdir: tmpDir, cliPlugin: 'mock' });
-    session.status = 'approval_pending';
-    session.runtimeState = 'waiting_approval';
+    registry.create('sess-typing-quiet', { workdir: tmpDir, cliPlugin: 'mock' });
+
+    dispatcher = new IMMessageDispatcher({
+      registry,
+      imPlugin: mockIM,
+      imTarget: { plugin: 'mattermost', channelId: 'ch1', threadId: '' },
+      workerManager: new IMWorkerManager(new MockCLIPlugin(mockCli), registry),
+      pollIntervalMs: 20,
+      typingIntervalMs: 100,
+      typingQuietWindowMs: 180,
+    });
+    dispatcher.start();
+
+    registry.enqueueIMMessage('sess-typing-quiet', {
+      text: 'quiet window',
+      dedupeKey: 'dk-typing-quiet',
+      plugin: 'mattermost',
+      threadId: 'thread-typing-quiet',
+      messageId: 'mid-typing-quiet',
+      userId: 'u-typing-quiet',
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 140));
+    expect(registry.get('sess-typing-quiet')?.runtimeState).toBe('running');
+    const callsBeforeQuiet = mockIM.typingCalls.length;
+    expect(callsBeforeQuiet).toBeGreaterThan(0);
+
+    await new Promise(resolve => setTimeout(resolve, 220));
+    expect(registry.get('sess-typing-quiet')?.runtimeState).toBe('running');
+    expect(mockIM.typingCalls.length).toBe(callsBeforeQuiet);
+
+    await new Promise(resolve => setTimeout(resolve, 260));
+    expect(registry.get('sess-typing-quiet')?.runtimeState).toBe('ready');
+    expect(registry.get('sess-typing-quiet')?.status).toBe('idle');
+  }, 10000);
+
+  test('error 事件不应结束当前 turn 或停止后续 typing 续发', async () => {
+    const mockCli = path.join(tmpDir, 'typing-error-not-done.sh');
+    fs.writeFileSync(mockCli, [
+      '#!/bin/sh',
+      'while IFS= read -r line; do',
+      "  printf '%s\\n' '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"working\"}]}}'",
+      '  sleep 0.15',
+      "  printf '%s\\n' '{\"type\":\"error\",\"payload\":{\"message\":\"transient\"}}'",
+      '  sleep 0.35',
+      "  printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"done\"}'",
+      'done',
+    ].join('\n'), { mode: 0o755 });
+
+    registry.create('sess-error-not-done', { workdir: tmpDir, cliPlugin: 'mock' });
 
     dispatcher = new IMMessageDispatcher({
       registry,
@@ -580,18 +634,26 @@ describe('IMMessageDispatcher 动态 thread 路由', () => {
     });
     dispatcher.start();
 
-    registry.enqueueIMMessage('sess-typing-blocked', {
-      text: 'blocked',
-      dedupeKey: 'dk-typing-blocked',
+    registry.enqueueIMMessage('sess-error-not-done', {
+      text: 'error then result',
+      dedupeKey: 'dk-error-not-done',
       plugin: 'mattermost',
-      threadId: 'thread-typing-blocked',
-      messageId: 'mid-typing-blocked',
-      userId: 'u-typing-blocked',
+      threadId: 'thread-error-not-done',
+      messageId: 'mid-error-not-done',
+      userId: 'u-error-not-done',
     });
 
-    await new Promise(resolve => setTimeout(resolve, 400));
-    expect(mockIM.typingCalls).toHaveLength(0);
-    expect(registry.get('sess-typing-blocked')?.runtimeState).toBe('waiting_approval');
+    await new Promise(resolve => setTimeout(resolve, 260));
+    expect(registry.get('sess-error-not-done')?.runtimeState).toBe('running');
+    const callsAfterError = mockIM.typingCalls.length;
+    expect(callsAfterError).toBeGreaterThan(0);
+
+    await new Promise(resolve => setTimeout(resolve, 220));
+    expect(mockIM.typingCalls.length).toBeGreaterThan(callsAfterError);
+    expect(registry.get('sess-error-not-done')?.runtimeState).toBe('running');
+
+    await new Promise(resolve => setTimeout(resolve, 350));
+    expect(registry.get('sess-error-not-done')?.runtimeState).toBe('ready');
   }, 10000);
 
   test('同一 session 多条消息 FIFO 串行处理', async () => {

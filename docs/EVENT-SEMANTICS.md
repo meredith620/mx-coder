@@ -181,7 +181,7 @@ attach 不是普通状态切换，而是**控制端切换**：
 ## 8. typing indicator 语义
 
 1. typing indicator 不是 Claude Code 原生状态，而是 mm-coder 基于 `runtimeState=running` 派生出的 IM 侧提示行为。
-2. typing 只在“当前轮正在执行但尚未完成”时发送。
+2. typing 只在“当前轮正在执行且最近仍有新的 Claude 流事件”时发送。
 3. 以下状态不得发送 typing：
    - `ready`
    - `cold`
@@ -191,6 +191,7 @@ attach 不是普通状态切换，而是**控制端切换**：
    - `takeover_pending`
 4. typing 必须节流，避免高频调用 Mattermost API。
 5. 当状态从 `running` 切出后，应立即停止后续 typing 续发。
+6. 即使 session 仍暂时保持 `running`，若超过静默窗口未再收到新的 Claude 流事件，也必须停止 typing 续发，避免“Claude 已在等待下一步指令，但 Mattermost 仍显示 typing”的误报。
 
 ## 9. 典型误用（看到就该拦下）
 
