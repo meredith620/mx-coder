@@ -216,7 +216,32 @@ export class ApprovalManager {
       state.decision = input.decision;
       if (input.scope !== undefined) state.scope = input.scope;
       state._decided = true;
+
+      if (input.scope === 'session' && state.capability && state.operatorId) {
+        const cacheKey = `${state.sessionId}:${state.operatorId}:${state.capability}`;
+        this._sessionScopeCache.add(cacheKey);
+      }
+
       return { status: state.decision };
+    } finally {
+      releaseMutex(mutex);
+    }
+  }
+
+  async cancel(requestId: string, reason = 'user_cancelled'): Promise<DecideResult> {
+    const state = this._states.get(requestId);
+    if (!state) return { status: 'stale' };
+
+    const mutex = this._mutexes.get(requestId) ?? makeMutex();
+    await acquireMutex(mutex);
+    try {
+      if (state._decided) {
+        return { status: 'stale' };
+      }
+      state.decision = 'cancelled';
+      state.cancelReason = reason;
+      state._decided = true;
+      return { status: 'cancelled', cancelReason: reason };
     } finally {
       releaseMutex(mutex);
     }

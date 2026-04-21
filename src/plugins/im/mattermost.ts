@@ -519,31 +519,24 @@ export class MattermostPlugin implements IMPlugin {
   }
 
   async requestApproval(target: MessageTarget, request: ApprovalRequest): Promise<void> {
-    const actions = request.scopeOptions.map(scope => ({
-      id: `approve_${scope}_${request.requestId}`,
-      name: scope === 'once' ? 'Approve (once)' : 'Approve (session)',
-      type: 'button',
-      style: 'good',
-    }));
-    actions.push({
-      id: `deny_${request.requestId}`,
-      name: 'Deny',
-      type: 'button',
-      style: 'danger',
-    });
+    const commandHelp = [
+      `/approve ${request.requestId} once`,
+      `/approve ${request.requestId} session`,
+      `/deny ${request.requestId} once`,
+      `/cancel ${request.requestId}`,
+    ].join('\n');
 
     await this._apiRequest('/api/v4/posts', {
       method: 'POST',
       body: JSON.stringify({
-        channel_id: this._config.channelId,
+        channel_id: target.channelId ?? this._config.channelId,
         root_id: target.threadId,
-        message: `**Approval required** — \`${request.toolName}\`\n${request.toolInputSummary}`,
+        message: `**Approval required** — \`${request.toolName}\`\n${request.toolInputSummary}\n\n可用命令：\n${commandHelp}`,
         props: {
           attachments: [{
             title: `Tool: ${request.toolName}`,
-            text: request.toolInputSummary,
+            text: `${request.toolInputSummary}\n\n${commandHelp}`,
             color: request.riskLevel === 'high' ? '#FF0000' : request.riskLevel === 'medium' ? '#FFA500' : '#00FF00',
-            actions,
           }],
         },
       }),

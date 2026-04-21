@@ -5,10 +5,12 @@ import type { Session } from '../../src/types.js';
 export class MockCLIPlugin implements LegacyIMMessageCLIPlugin {
   private _command: string;
   private _args: string[];
+  private _buildIMWorkerArgs?: (session: Session, bridgeScriptPath: string) => string[];
 
-  constructor(command: string, args: string[] = []) {
+  constructor(command: string, args: string[] = [], opts?: { buildIMWorkerArgs?: (session: Session, bridgeScriptPath: string) => string[] }) {
     this._command = command;
     this._args = args;
+    this._buildIMWorkerArgs = opts?.buildIMWorkerArgs;
   }
 
   buildAttachCommand(session: Session): CommandSpec {
@@ -18,10 +20,10 @@ export class MockCLIPlugin implements LegacyIMMessageCLIPlugin {
     };
   }
 
-  buildIMWorkerCommand(_session: Session, _bridgeScriptPath: string): CommandSpec {
+  buildIMWorkerCommand(session: Session, bridgeScriptPath: string): CommandSpec {
     return {
       command: this._command,
-      args: [...this._args],
+      args: this._buildIMWorkerArgs ? this._buildIMWorkerArgs(session, bridgeScriptPath) : [...this._args],
     };
   }
 

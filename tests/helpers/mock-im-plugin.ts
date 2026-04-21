@@ -19,12 +19,20 @@ interface CreatedConversationRecord {
   isPrivate?: boolean;
 }
 
+interface ApprovalDecisionRecord {
+  requestId: string;
+  decision: 'approved' | 'denied' | 'cancelled';
+  scope?: 'once' | 'session';
+}
+
 export class MockIMPlugin implements IMPlugin {
   private _handlers: Array<(msg: IncomingMessage) => void> = [];
   sent: SentRecord[] = [];
   liveMessages = new Map<string, string>(); // messageId → text content
   liveMessageTargets = new Map<string, MessageTarget>();
   approvalRequests: ApprovalRequest[] = [];
+  approvalTargets: MessageTarget[] = [];
+  approvalDecisions: ApprovalDecisionRecord[] = [];
   typingCalls: TypingRecord[] = [];
   createdConversations: CreatedConversationRecord[] = [];
   failCreateLiveMessage = false;
@@ -81,7 +89,12 @@ export class MockIMPlugin implements IMPlugin {
   }
 
   async requestApproval(target: MessageTarget, request: ApprovalRequest): Promise<void> {
+    this.approvalTargets.push(target);
     this.approvalRequests.push(request);
+  }
+
+  recordApprovalDecision(requestId: string, decision: 'approved' | 'denied' | 'cancelled', scope?: 'once' | 'session'): void {
+    this.approvalDecisions.push({ requestId, decision, scope });
   }
 
   async sendTyping(target: MessageTarget): Promise<void> {

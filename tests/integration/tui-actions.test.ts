@@ -5,6 +5,7 @@ import { createTuiActions } from '../../src/tui.js';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { MockIMPlugin } from '../helpers/mock-im-plugin.js';
 
 
 describe('TUI actions', () => {
@@ -12,12 +13,17 @@ describe('TUI actions', () => {
   let socketPath: string;
   let daemon: Daemon;
   let client: IPCClient;
+  let mockIM: MockIMPlugin;
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-tui-actions-'));
     socketPath = path.join(tmpDir, 'daemon.sock');
     daemon = new Daemon(socketPath);
     await daemon.start();
+    mockIM = new MockIMPlugin();
+    (daemon as any)._imPlugin = mockIM;
+    (daemon as any)._imPluginName = 'mattermost';
+    (daemon as any)._imPlugins.set('mattermost', mockIM);
     client = new IPCClient(socketPath);
     await client.connect();
   });
@@ -28,11 +34,15 @@ describe('TUI actions', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  test('create / status / remove 动作可通过 IPC 完成闭环', async () => {
+  test('create / open / status / remove 动作可通过 IPC 完成闭环', async () => {
     const actions = createTuiActions(client);
 
-    const created = await actions.createSession({ name: 'demo', workdir: tmpDir, cli: 'claude-code' });
+    const created = await actions.createSession({ name: 'demo', workdir: tmpDir, cli: 'claude-code', spaceStrategy: 'channel' });
     expect(created.name).toBe('demo');
+
+    const opened = await actions.openSession({ name: 'demo', spaceStrategy: 'thread' });
+    expect(opened.session.name).toBe('demo');
+    expect(opened.spaceStrategy).toBe('thread');
 
     const status = await actions.getStatus('demo');
     expect(status.name).toBe('demo');

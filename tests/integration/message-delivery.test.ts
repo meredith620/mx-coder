@@ -88,25 +88,18 @@ describe('message delivery', () => {
     await mgr.terminate('test');
   });
 
-  test('短 continuation prompt 会被扩写为继续执行语义再写入 worker stdin', async () => {
-    const tmpFile = path.join(tmpDir, 'stdin-continue.jsonl');
-    const plugin = new EchoCLIPlugin(tmpFile);
-    const session = registry.create('continue-test', { workdir: tmpDir, cliPlugin: 'mock' });
+  test('懒启动：首条消息时 spawn IM worker', async () => {
+    const plugin = new SleepCLIPlugin();
+    const session = registry.create('test', { workdir: tmpDir, cliPlugin: 'mock' });
     const mgr = new IMWorkerManager(plugin, registry);
 
-    await mgr.spawn(session);
-    await mgr.sendMessage('continue-test', '继续');
+    expect(registry.get('test')!.imWorkerPid).toBeNull();
 
-    await new Promise(resolve => setTimeout(resolve, 200));
+    await mgr.sendMessage('test', 'Hello');
 
-    const content = fs.readFileSync(tmpFile, 'utf8').trim();
-    const written = JSON.parse(content);
-    const text = written.message.content[0].text as string;
-    expect(text).toContain('继续上一个未完成任务');
-    expect(text).toContain('不要只描述计划');
-    expect(text).toContain('继续实际执行');
+    expect(registry.get('test')!.imWorkerPid).not.toBeNull();
 
-    await mgr.terminate('continue-test');
+    await mgr.terminate('test');
   });
 
 

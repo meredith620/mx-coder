@@ -61,6 +61,9 @@ async function main() {
       case 'attach':
         await handleAttach(parsed.args);
         break;
+      case 'open':
+        await handleOpen(parsed.args);
+        break;
       case 'list':
         await handleList();
         break;
@@ -115,8 +118,11 @@ COMMANDS:
   stop                            Stop the running daemon
   restart                         Restart the daemon
   create <name> [-n|--name <name>] [-w|--workdir <path>] [-C|--cli <name>]
+                                  [--space-strategy <thread|channel>]
                                   Create a new session
   attach <name> [-n|--name <name>]  Attach to a session
+  open <name> [-n|--name <name>] [--space-strategy <thread|channel>]
+                                  Open a session in IM with one-shot space override
   diagnose <name>                   Print local diagnostic info for a session
   takeover-status <name>            Show takeover request state
   takeover-cancel <name>            Cancel a pending takeover request
@@ -161,6 +167,7 @@ function getCompletionCommands(): string[] {
     'restart',
     'create',
     'attach',
+    'open',
     'diagnose',
     'takeover-status',
     'takeover-cancel',
@@ -342,15 +349,24 @@ async function handleCreate(args: Record<string, string | undefined>) {
   const name = args.name;
   const workdir = args.workdir ?? process.cwd();
   const cli = args.cli ?? getDefaultCLIPluginName();
+  const spaceStrategy = args['space-strategy'];
 
   if (!name) {
     throw new Error('Missing required argument: name');
+  }
+  if (spaceStrategy !== undefined && spaceStrategy !== 'thread' && spaceStrategy !== 'channel') {
+    throw new Error("space-strategy must be 'thread' or 'channel'");
   }
 
   const client = new IPCClient(SOCKET_PATH);
   await client.connect();
 
-  const res = await client.send('create', { name, workdir, cli });
+  const res = await client.send('create', {
+    name,
+    workdir,
+    cli,
+    ...(spaceStrategy ? { spaceStrategy } : {}),
+  });
   await client.close();
 
   if (!res.ok) {
@@ -358,6 +374,32 @@ async function handleCreate(args: Record<string, string | undefined>) {
   }
 
   console.log(`Session '${name}' created`);
+}
+
+async function handleOpen(args: Record<string, string | undefined>) {
+  const name = args.name;
+  const spaceStrategy = args['space-strategy'];
+
+  if (!name) {
+    throw new Error('Missing required argument: name');
+  }
+  if (spaceStrategy !== undefined && spaceStrategy !== 'thread' && spaceStrategy !== 'channel') {
+    throw new Error("space-strategy must be 'thread' or 'channel'");
+  }
+
+  const client = new IPCClient(SOCKET_PATH);
+  await client.connect();
+  const response = await client.send('open', {
+    name,
+    ...(spaceStrategy ? { spaceStrategy } : {}),
+  });
+  await client.close();
+
+  if (!response.ok) {
+    throw new Error(`Failed to open session: ${response.error!.message}`);
+  }
+
+  console.log(JSON.stringify(response.data, null, 2));
 }
 
 async function handleAttach(args: Record<string, string | undefined>) {

@@ -133,6 +133,13 @@ npm run daemon
 # 等价于：tsx src/daemon.ts
 ```
 
+### 开发包本地安装
+
+```
+npm run build
+npm pack
+npm install -g mm-coder-x.y.z.tgz
+```
 ---
 
 ## 测试

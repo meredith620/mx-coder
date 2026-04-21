@@ -52,6 +52,8 @@ const IM_ACTION_MIN_ROLE: Record<string, AclRole> = {
   send_text: 'operator',
   send_message: 'operator',
   approve: 'approver',
+  deny: 'approver',
+  cancel: 'approver',
   takeover_soft: 'owner',
   takeover_hard: 'owner',
 };

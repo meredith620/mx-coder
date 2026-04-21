@@ -71,10 +71,11 @@ describe('AclManager — authorizeIMAction', () => {
     expect(result).toBe('allow');
   });
 
-  test('approve 动作需要 approver 角色', () => {
+
+  test('cancel 动作需要 approver 角色', () => {
     const acl = new AclManager();
     acl.grantRole('sess1', 'op-user', 'operator');
-    const result = acl.authorizeIMAction('sess1', 'op-user', { action: 'approve', requestId: 'r1' });
+    const result = acl.authorizeIMAction('sess1', 'op-user', { action: 'cancel', requestId: 'r1' });
     expect(result).toBe('deny');
   });
 

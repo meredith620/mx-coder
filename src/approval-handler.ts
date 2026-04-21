@@ -2,13 +2,14 @@ import * as net from 'net';
 import * as readline from 'readline';
 import type { ApprovalManager } from './approval-manager.js';
 import type { IMPlugin } from './plugins/types.js';
-import type { MessageTarget } from './types.js';
+import type { MessageTarget, Capability } from './types.js';
 
 export interface ApprovalHandlerOptions {
   socketPath: string;
   approvalManager: ApprovalManager;
   imPlugin: IMPlugin;
   imTarget: MessageTarget;
+  resolveContext?: (sessionId: string) => { target: MessageTarget; sessionName: string } | undefined;
 }
 
 interface JsonRPCRequest {
@@ -19,6 +20,20 @@ interface JsonRPCRequest {
     name?: string;
     arguments?: Record<string, unknown>;
   };
+}
+
+function toRiskLevel(capability?: Capability): 'low' | 'medium' | 'high' {
+  switch (capability) {
+    case 'read_only':
+      return 'low';
+    case 'file_write':
+      return 'medium';
+    case 'shell_dangerous':
+    case 'network_destructive':
+      return 'high';
+    default:
+      return 'medium';
+  }
 }
 
 /**
@@ -74,9 +89,16 @@ export class ApprovalHandler {
         const sessionId = toolArgs['session_id'] as string ?? '';
         const messageId = toolArgs['message_id'] as string ?? '';
         const toolUseId = toolArgs['tool_use_id'] as string ?? '';
+        const capability = toolArgs['capability'] as Capability | undefined;
+        const operatorId = toolArgs['operator_id'] as string | undefined;
+        const correlationId = toolArgs['correlation_id'] as string | undefined;
 
-        // Apply rules first
-        const ruleResult = await this._opts.approvalManager.applyRules(toolName, toolInput);
+        const ruleResult = await this._opts.approvalManager.applyRules(
+          toolName,
+          toolInput,
+          capability,
+          sessionId && operatorId ? { sessionId, operatorId } : undefined,
+        );
 
         if (ruleResult === 'allow') {
           socket.write(JSON.stringify({ jsonrpc: '2.0', id: req.id, result: { allow: true } }) + '\n');
@@ -93,17 +115,23 @@ export class ApprovalHandler {
           sessionId,
           messageId,
           toolUseId,
+          ...(correlationId ? { correlationId } : {}),
+          ...(capability ? { capability } : {}),
+          ...(operatorId ? { operatorId } : {}),
         });
 
-        // Notify IM plugin
-        await this._opts.imPlugin.requestApproval(this._opts.imTarget, {
+        const resolvedContext = this._opts.resolveContext?.(sessionId);
+        const target = resolvedContext?.target ?? this._opts.imTarget;
+        const sessionName = resolvedContext?.sessionName ?? sessionId;
+
+        await this._opts.imPlugin.requestApproval(target, {
           requestId: created.requestId,
-          sessionName: sessionId,
+          sessionName,
           messageId,
           toolName,
           toolInputSummary: JSON.stringify(toolInput).slice(0, 200),
-          riskLevel: 'medium',
-          capability: 'shell_dangerous',
+          riskLevel: toRiskLevel(capability),
+          capability: capability ?? 'file_write',
           scopeOptions: ['once', 'session'],
           timeoutSeconds: 60,
         });

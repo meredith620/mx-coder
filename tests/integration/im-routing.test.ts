@@ -306,19 +306,18 @@ describe('Daemon IM 路由', () => {
     expect((mockIM.sent[0].content as any).text).toContain('已强制接管会话 demo-force');
   });
 
-  test('MM 短 continuation 文本会以扩写后的继续执行语义入队', async () => {
+  test('普通文本入队到对应 session', async () => {
     const mockIM = new MockIMPlugin();
     (daemon as any)._imPlugin = mockIM;
     (daemon as any)._imPluginName = 'mattermost';
 
-    const msg = makeMsg({ text: '继续', threadId: 'continue-thread' });
+    const msg = makeMsg({ text: 'hello world', threadId: 'normal-thread' });
     await (daemon as any)._handleIncomingIMMessage(msg, 'ch1');
 
-    const session = daemon.registry.getByIMThread('mattermost', 'continue-thread');
+    const session = daemon.registry.getByIMThread('mattermost', 'normal-thread');
     expect(session).toBeTruthy();
     expect(session!.messageQueue).toHaveLength(1);
-    expect(session!.messageQueue[0].content).toContain('继续上一个未完成任务');
-    expect(session!.messageQueue[0].content).toContain('不要只描述计划');
+    expect(session!.messageQueue[0].content).toBe('hello world');
   });
 
 });

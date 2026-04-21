@@ -5,6 +5,7 @@ import { PersistenceStore } from './persistence.js';
 import { IMMessageDispatcher } from './im-message-dispatcher.js';
 import { IMWorkerManager } from './im-worker-manager.js';
 import { ApprovalManager } from './approval-manager.js';
+import { ApprovalHandler } from './approval-handler.js';
 import { getIMPluginFactory, getDefaultIMPluginName } from './plugins/im/registry.js';
 import { getCLIPlugin, getDefaultCLIPluginName } from './plugins/cli/registry.js';
 import type { IMPlugin } from './plugins/types.js';
@@ -15,17 +16,9 @@ import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 
 
-function normalizeIncomingIMText(text: string): string {
-  const trimmed = text.trim();
-  if (!['继续', '继续执行', '请继续', '请继续执行', '接着做', '接着执行'].includes(trimmed)) {
-    return text;
-  }
-
-  return [
-    '继续上一个未完成任务。',
-    '不要只描述计划。',
-    '请继续实际执行，必要时继续调用工具完成调研、读取、修改、验证，并把关键进展回传到当前会话。',
-  ].join('\n');
+function mockApprovalDecision(imPlugin: IMPlugin, requestId: string, decision: 'approved' | 'denied' | 'cancelled', scope: 'once' | 'session'): void {
+  const maybeRecorder = imPlugin as IMPlugin & { recordApprovalDecision?: (requestId: string, decision: 'approved' | 'denied' | 'cancelled', scope?: 'once' | 'session') => void };
+  maybeRecorder.recordApprovalDecision?.(requestId, decision, scope);
 }
 
 export interface DaemonOptions {
@@ -48,6 +41,8 @@ export class Daemon {
   private _imDispatcher: IMMessageDispatcher | null = null;
   private _imWorkerManager: IMWorkerManager | null = null;
   private _approvalManager: ApprovalManager | null = null;
+  private _approvalHandler: ApprovalHandler | null = null;
+  private _approvalSocketPath: string;
   private _defaultCLIPluginName: string;
   private _imPluginConfig: Record<string, unknown>;
 
@@ -71,6 +66,7 @@ export class Daemon {
       autoDenyPatterns: [],
       timeoutSeconds: 300,
     });
+    this._approvalSocketPath = `${socketPath}.approval.sock`;
     this._defaultCLIPluginName = opts.defaultCLIPluginName ?? getDefaultCLIPluginName();
     this._imPluginConfig = opts.imPluginConfig ?? {};
     this._registerHandlers();
@@ -120,7 +116,41 @@ export class Daemon {
       return;
     }
 
-    this._imWorkerManager = new IMWorkerManager((session: Session) => getCLIPlugin(session.cliPlugin), this.registry);
+    this._approvalHandler = new ApprovalHandler({
+      socketPath: this._approvalSocketPath,
+      approvalManager: this._approvalManager!,
+      imPlugin: this._imPlugin!,
+      imTarget: {
+        plugin: this._imPluginName ?? getDefaultIMPluginName(),
+        threadId: '',
+      },
+      resolveContext: (sessionId: string) => {
+        const session = this.registry.list().find((item) => item.sessionId === sessionId);
+        if (!session) return undefined;
+        const binding = session.imBindings[0];
+        if (!binding) {
+          return {
+            target: { plugin: this._imPluginName ?? getDefaultIMPluginName(), threadId: '' },
+            sessionName: session.name,
+          };
+        }
+        return {
+          target: {
+            plugin: binding.plugin,
+            ...(binding.channelId ? { channelId: binding.channelId } : {}),
+            threadId: binding.bindingKind === 'channel' ? '' : binding.threadId,
+          },
+          sessionName: session.name,
+        };
+      },
+    });
+    await this._approvalHandler.listen();
+
+    this._imWorkerManager = new IMWorkerManager(
+      (session: Session) => getCLIPlugin(session.cliPlugin),
+      this.registry,
+      this._approvalSocketPath,
+    );
 
       this._imDispatcher = new IMMessageDispatcher({
       registry: this.registry,
@@ -211,6 +241,21 @@ export class Daemon {
       return;
     }
 
+    if (trimmed === '/approve' || trimmed.startsWith('/approve ')) {
+      await this._handleApprovalDecision(msg, channelId, 'approved');
+      return;
+    }
+
+    if (trimmed === '/deny' || trimmed.startsWith('/deny ')) {
+      await this._handleApprovalDecision(msg, channelId, 'denied');
+      return;
+    }
+
+    if (trimmed === '/cancel' || trimmed.startsWith('/cancel ')) {
+      await this._handleApprovalDecision(msg, channelId, 'cancelled');
+      return;
+    }
+
     // C 类：IM 中不支持的命令（remove/attach/create 等）
     // 在 thread 中（isTopLevel=false）拦截，不落入 CLI
     if (!msg.isTopLevel && trimmed.startsWith('/')) {
@@ -253,7 +298,7 @@ export class Daemon {
     }
     try {
       this.registry.enqueueIMMessage(session.name, {
-        text: normalizeIncomingIMText(msg.text),
+        text: msg.text,
         dedupeKey: msg.dedupeKey,
         plugin: msg.plugin,
         channelId: msg.channelId ?? channelId,
@@ -272,6 +317,65 @@ export class Daemon {
       });
     } catch (err) {
       console.error(`Failed to enqueue IM message: ${(err as Error).message}`);
+    }
+  }
+
+  private async _handleApprovalDecision(
+    msg: IncomingMessage,
+    channelId: string,
+    decision: 'approved' | 'denied' | 'cancelled',
+  ): Promise<void> {
+    const imPlugin = this._getIMPlugin(msg.plugin);
+    if (!this._approvalManager) return;
+
+    const parts = msg.text.trim().split(/\s+/);
+    const requestId = parts[1];
+    const scope = parts[2] === 'session' ? 'session' : 'once';
+    if (!requestId) {
+      if (imPlugin) {
+        await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+          kind: 'text',
+          text: `用法：/${decision === 'approved' ? 'approve' : decision === 'denied' ? 'deny' : 'cancel'} <requestId> [once|session]`,
+        });
+      }
+      return;
+    }
+
+    const state = this._approvalManager.getApprovalState(requestId);
+    if (!state) {
+      if (imPlugin) {
+        await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+          kind: 'text',
+          text: `未找到审批请求 ${requestId}。`,
+        });
+      }
+      return;
+    }
+
+    if (msg.userId && this._acl.authorize(state.sessionId, msg.userId, decision === 'approved' ? 'approve' : decision === 'denied' ? 'deny' : 'cancel') === 'deny') {
+      if (imPlugin) {
+        await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+          kind: 'text',
+          text: `无权限处理审批 ${requestId}。`,
+        });
+      }
+      return;
+    }
+
+    let result;
+    if (decision === 'cancelled') {
+      result = await this._approvalManager.cancel(requestId);
+      if (imPlugin) mockApprovalDecision(imPlugin, requestId, 'cancelled', scope);
+    } else {
+      result = await this._approvalManager.decideByApprover(requestId, msg.userId, { decision, scope });
+      if (imPlugin) mockApprovalDecision(imPlugin, requestId, decision, scope);
+    }
+
+    if (imPlugin) {
+      await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+        kind: 'text',
+        text: `审批 ${requestId} 处理结果：${result.status}`,
+      });
     }
   }
 
@@ -469,7 +573,12 @@ export class Daemon {
     this._debugLog({ event: 'takeover_forced', sessionName, requestedBy: msg.userId });
   }
 
-  private async _handleOpenCommand(sessionName: string, channelId: string, msg: IncomingMessage): Promise<void> {
+  private async _handleOpenCommand(
+    sessionName: string,
+    channelId: string,
+    msg: IncomingMessage,
+    overrideStrategy?: 'thread' | 'channel',
+  ): Promise<void> {
     this._debugLog({
       event: 'open_command_received',
       sessionName,
@@ -535,7 +644,7 @@ export class Daemon {
       }
     }
 
-    const strategy = this._getMattermostConversationKind();
+    const strategy = overrideStrategy ?? this._getMattermostConversationKind();
     if (strategy === 'channel') {
       const createChannelConversation = (imPlugin as IMPlugin & { createChannelConversation?: (input: { channelId: string; teamId: string; isPrivate: boolean }) => Promise<string> }).createChannelConversation;
       const teamId = this._imPluginConfig['teamId'];
@@ -659,6 +768,10 @@ export class Daemon {
     ]);
     for (const plugin of plugins) {
       await plugin.disconnect?.();
+    }
+    if (this._approvalHandler) {
+      await this._approvalHandler.close();
+      this._approvalHandler = null;
     }
 
     // Stop daemon core
@@ -855,6 +968,38 @@ export class Daemon {
       this.registry.cancelTakeover(name);
       if (this._store) void this._store.flush();
       return { session: this._serializeSession(this.registry.get(name)!) };
+    });
+
+    this._server.handle('open', async (args) => {
+      const name = args['name'] as string;
+      const plugin = (args['plugin'] as string | undefined) ?? this._imPluginName ?? getDefaultIMPluginName();
+      const channelId = (args['channelId'] as string | undefined) ?? '';
+      const threadId = (args['threadId'] as string | undefined) ?? '';
+      const overrideRaw = args['spaceStrategy'] as string | undefined;
+      const overrideStrategy = overrideRaw === 'thread' || overrideRaw === 'channel' ? overrideRaw : undefined;
+      const imPlugin = this._getIMPlugin(plugin);
+      if (!imPlugin) {
+        const e = new Error(`IM plugin not initialized: ${plugin}`) as Error & { code: ErrorCode };
+        e.code = 'INTERNAL_ERROR';
+        throw e;
+      }
+      const msg: IncomingMessage = {
+        plugin,
+        channelId,
+        threadId,
+        isTopLevel: !threadId,
+        userId: '',
+        text: `/open ${name}`,
+        messageId: randomUUID(),
+        createdAt: new Date().toISOString(),
+        dedupeKey: randomUUID(),
+      };
+      await this._handleOpenCommand(name, channelId, msg, overrideStrategy);
+      const session = this.registry.get(name);
+      return {
+        session: session ? this._serializeSession(session) : null,
+        spaceStrategy: overrideStrategy ?? this._getMattermostConversationKind(),
+      };
     });
 
     this._server.handle('import', async (args, actor) => {

@@ -170,6 +170,16 @@ describe('ApprovalManager — scope=session cache', () => {
     expect(result).toBe('allow');
   });
 
+  test('approver 走 decideByApprover + scope=session 时同样写入 session cache', async () => {
+    const ctx = { sessionId: 's2', messageId: 'm2', toolUseId: 't2', operatorId: 'op2', capability: 'file_write' as const };
+    const req = await mgr.createPendingApproval(ctx);
+    await mgr.decideByApprover(req.requestId, 'approver-1', { decision: 'approved', scope: 'session' });
+
+    const result = await mgr.applyRules('Edit', { path: '/tmp/c.txt' }, 'file_write', { sessionId: 's2', operatorId: 'op2' });
+    expect(result).toBe('allow');
+  });
+
+
   test('scope=session 缓存在 session 结束时失效', async () => {
     const ctx = { sessionId: 's1', messageId: 'm1', toolUseId: 't1', operatorId: 'op1', capability: 'file_write' as const };
     const req = await mgr.createPendingApproval(ctx);

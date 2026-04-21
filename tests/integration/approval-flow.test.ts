@@ -21,8 +21,8 @@ describe('审批链路集成', () => {
 
     approvalMgr = new ApprovalManager({
       autoAllowCapabilities: [],
-      autoAskCapabilities: ['bash', 'computer'],
-      autoDenyCapabilities: [],
+      autoAskCapabilities: ['file_write'],
+      autoDenyCapabilities: ['shell_dangerous'],
       autoDenyPatterns: [],
       timeoutSeconds: 5,
     });
@@ -52,16 +52,18 @@ describe('审批链路集成', () => {
       params: {
         name: 'can_use_tool',
         arguments: {
-          tool_name: 'bash',
-          tool_input: { command: 'ls -la' },
+          tool_name: 'Edit',
+          tool_input: { path: '/tmp/a.txt' },
           session_id: 'sess-approval-test',
           message_id: 'msg-1',
           tool_use_id: 'tool-1',
+          capability: 'file_write',
+          operator_id: 'user-1',
+          correlation_id: 'corr-1',
         },
       },
     });
 
-    // Connect a mock worker
     const workerSocket = await new Promise<net.Socket>((resolve, reject) => {
       const s = net.createConnection(socketPath);
       s.on('connect', () => resolve(s));
@@ -70,24 +72,22 @@ describe('审批链路集成', () => {
 
     let response = '';
     workerSocket.on('data', chunk => { response += chunk.toString(); });
-
     workerSocket.write(canUseToolRequest + '\n');
 
-    // Wait for IM to get the approval request
     await new Promise(resolve => setTimeout(resolve, 100));
 
     expect(mockIM.approvalRequests).toHaveLength(1);
     const req = mockIM.approvalRequests[0];
-    expect(req.toolName).toBe('bash');
+    expect(req.toolName).toBe('Edit');
+    expect(req.capability).toBe('file_write');
+    expect(req.riskLevel).toBe('medium');
 
-    // Approve the request
     const state = approvalMgr.getAllApprovalStates()[0];
     expect(state).toBeDefined();
-    await approvalMgr.decide(state.requestId, { decision: 'approved', scope: 'once' });
+    expect(state.context.correlationId).toBe('corr-1');
+    await approvalMgr.decide(state.requestId, { decision: 'approved', scope: 'session' });
 
-    // Wait for worker to receive response
     await new Promise(resolve => setTimeout(resolve, 100));
-
     workerSocket.destroy();
 
     const parsed = JSON.parse(response.trim());
@@ -95,23 +95,7 @@ describe('审批链路集成', () => {
     expect(parsed.result?.allow).toBe(true);
   }, 15000);
 
-  test('超时后 worker 收到 deny 响应', async () => {
-    const shortTimeoutMgr = new ApprovalManager({
-      autoAllowCapabilities: [],
-      autoAskCapabilities: ['bash'],
-      autoDenyCapabilities: [],
-      autoDenyPatterns: [],
-      timeoutSeconds: 0.2, // 200ms timeout
-    });
-
-    const shortHandler = new ApprovalHandler({
-      socketPath: path.join(tmpDir, 'short.sock'),
-      approvalManager: shortTimeoutMgr,
-      imPlugin: mockIM,
-      imTarget: { plugin: 'mock', threadId: 'thread-1' },
-    });
-    await shortHandler.listen();
-
+  test('shell_dangerous 工具直接返回 deny，不发送审批消息', async () => {
     const req = JSON.stringify({
       jsonrpc: '2.0',
       id: 2,
@@ -119,17 +103,20 @@ describe('审批链路集成', () => {
       params: {
         name: 'can_use_tool',
         arguments: {
-          tool_name: 'bash',
-          tool_input: { command: 'rm -rf /' },
-          session_id: 'sess-timeout',
+          tool_name: 'Bash',
+          tool_input: { command: 'rm -rf /tmp/demo' },
+          session_id: 'sess-deny',
           message_id: 'msg-2',
           tool_use_id: 'tool-2',
+          capability: 'shell_dangerous',
+          operator_id: 'user-2',
+          correlation_id: 'corr-2',
         },
       },
     });
 
     const workerSocket = await new Promise<net.Socket>((resolve, reject) => {
-      const s = net.createConnection(path.join(tmpDir, 'short.sock'));
+      const s = net.createConnection(socketPath);
       s.on('connect', () => resolve(s));
       s.on('error', reject);
     });
@@ -138,13 +125,62 @@ describe('审批链路集成', () => {
     workerSocket.on('data', chunk => { response += chunk.toString(); });
     workerSocket.write(req + '\n');
 
-    // Wait for timeout (300ms > 200ms timeout)
-    await new Promise(resolve => setTimeout(resolve, 400));
+    await new Promise(resolve => setTimeout(resolve, 100));
     workerSocket.destroy();
-    await shortHandler.close();
 
     const parsed = JSON.parse(response.trim());
     expect(parsed.id).toBe(2);
     expect(parsed.result?.allow).toBe(false);
-  }, 15000);
+    expect(mockIM.approvalRequests).toHaveLength(0);
+  });
+
+  test('handler 使用 resolveContext 决定审批回传目标与 sessionName', async () => {
+    await handler.close();
+    handler = new ApprovalHandler({
+      socketPath,
+      approvalManager: approvalMgr,
+      imPlugin: mockIM,
+      imTarget: { plugin: 'mock', threadId: 'fallback-thread' },
+      resolveContext: (sessionId: string) => ({
+        target: { plugin: 'mock', threadId: 'resolved-thread', channelId: 'resolved-channel' },
+        sessionName: `${sessionId}-name`,
+      }),
+    });
+    await handler.listen();
+
+    const canUseToolRequest = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 4,
+      method: 'tools/call',
+      params: {
+        name: 'can_use_tool',
+        arguments: {
+          tool_name: 'Edit',
+          tool_input: { path: '/tmp/c.txt' },
+          session_id: 'sess-resolve',
+          message_id: 'msg-4',
+          tool_use_id: 'tool-4',
+          capability: 'file_write',
+          operator_id: 'user-4',
+          correlation_id: 'corr-4',
+        },
+      },
+    });
+
+    const workerSocket = await new Promise<net.Socket>((resolve, reject) => {
+      const s = net.createConnection(socketPath);
+      s.on('connect', () => resolve(s));
+      s.on('error', reject);
+    });
+    workerSocket.write(canUseToolRequest + '\n');
+
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    expect(mockIM.approvalRequests.at(-1)?.sessionName).toBe('sess-resolve-name');
+    expect(mockIM.approvalTargets.at(-1)?.threadId).toBe('resolved-thread');
+    expect(mockIM.approvalTargets.at(-1)?.channelId).toBe('resolved-channel');
+
+    workerSocket.destroy();
+  });
+
 });

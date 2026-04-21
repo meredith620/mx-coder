@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { generateBridgeScript } from '../../src/mcp-bridge.js';
+import { generateBridgeScript, generateBridgeMcpConfig, MM_CODER_BRIDGE_SERVER_NAME, MM_CODER_PERMISSION_TOOL_NAME } from '../../src/mcp-bridge.js';
 import * as net from 'net';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -36,30 +36,53 @@ describe('MCP Bridge script generation', () => {
     expect(scriptPath).toContain('sess-path-test');
   });
 
-  test('生成的 bridge 脚本连接 daemon socket 并转发', async () => {
-    const received: Buffer[] = [];
+  test('生成 mcp config，server 名与 permission tool 名符合 Claude MCP 约定', () => {
+    const config = generateBridgeMcpConfig('/tmp/mm-coder-bridge.js');
 
-    // Start a mock Unix socket server
+    expect(config.mcpServers).toEqual({
+      [MM_CODER_BRIDGE_SERVER_NAME]: {
+        command: 'node',
+        args: ['/tmp/mm-coder-bridge.js'],
+      },
+    });
+    expect(MM_CODER_PERMISSION_TOOL_NAME).toBe('mcp__mm_coder_bridge__can_use_tool');
+  });
+
+  test('bridge 作为 MCP stdio server 暴露 can_use_tool 并转发到 approval socket', async () => {
+    const requests: string[] = [];
     const server = net.createServer(socket => {
-      socket.on('data', chunk => received.push(chunk));
+      socket.on('data', chunk => {
+        requests.push(chunk.toString());
+        socket.write(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { allow: true } }) + '\n');
+      });
     });
 
     await new Promise<void>(resolve => server.listen(socketPath, resolve));
 
     const scriptPath = await generateBridgeScript('sess-fwd', socketPath, tmpDir);
-
-    // Spawn bridge process, write to stdin
     const proc = spawn('node', [scriptPath], { stdio: ['pipe', 'pipe', 'pipe'] });
 
-    const testPayload = JSON.stringify({ jsonrpc: '2.0', method: 'test', id: 1 }) + '\n';
-    proc.stdin.write(testPayload);
+    const stdoutChunks: string[] = [];
+    const stderrChunks: string[] = [];
+    proc.stdout.on('data', chunk => stdoutChunks.push(chunk.toString()));
+    proc.stderr.on('data', chunk => stderrChunks.push(chunk.toString()));
 
-    await new Promise(resolve => setTimeout(resolve, 300));
+    proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1.0.0' } } }) + '\n');
+    proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }) + '\n');
+    proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'can_use_tool', arguments: { tool_name: 'Edit', tool_input: { path: '/tmp/a.txt' }, message_id: 'msg-1', tool_use_id: 'tool-1' } } }) + '\n');
+
+    await new Promise(resolve => setTimeout(resolve, 400));
 
     proc.kill('SIGTERM');
     await new Promise<void>(resolve => server.close(() => resolve()));
 
-    const combined = Buffer.concat(received).toString();
-    expect(combined).toContain('"method":"test"');
+    const stdout = stdoutChunks.join('');
+    const stderr = stderrChunks.join('');
+    expect(stderr).toBe('');
+    expect(stdout).toContain('"protocolVersion"');
+    expect(stdout).toContain('"name":"can_use_tool"');
+    expect(stdout).toContain('"allow":true');
+    expect(requests.join('')).toContain('"method":"tools/call"');
+    expect(requests.join('')).toContain('"session_id":"sess-fwd"');
   }, 10000);
 });

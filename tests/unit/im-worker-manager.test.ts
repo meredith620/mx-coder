@@ -1,8 +1,11 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { IMWorkerManager } from '../../src/im-worker-manager.js';
 import { SessionRegistry } from '../../src/session-registry.js';
 import type { CommandSpec, LegacyIMMessageCLIPlugin } from '../../src/plugins/types.js';
 import type { Session } from '../../src/types.js';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 class MockCLIPlugin implements LegacyIMMessageCLIPlugin {
   buildAttachCommand(_session: Session): CommandSpec {
@@ -62,19 +65,25 @@ describe('IMWorkerManager', () => {
     }
   });
 
-  test('spawn 后进入 ready 并且 isAlive 返回 true', async () => {
-    const session = registry.create('test', { workdir: '/tmp', cliPlugin: 'mock' });
+  test('spawn 时会真实生成 mcp bridge 脚本', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-bridge-gen-'));
+    const session = registry.create('bridge-test', { workdir: '/tmp', cliPlugin: 'mock' });
+    session.sessionId = 'bridge-session-id';
     const mgr = new IMWorkerManager(mockPlugin, registry);
+
+    const bridgePath = path.join(os.tmpdir(), `mcp-bridge-${session.sessionId}.js`);
+    try { fs.rmSync(bridgePath, { force: true }); } catch {}
 
     await mgr.spawn(session);
 
-    const updated = registry.get('test')!;
-    expect(mgr.isAlive('test')).toBe(true);
-    expect(updated.runtimeState).toBe('ready');
-    expect(updated.status).toBe('idle');
+    expect(fs.existsSync(bridgePath)).toBe(true);
+    const content = fs.readFileSync(bridgePath, 'utf8');
+    expect(content).toContain('bridge-session-id');
 
-    await mgr.terminate('test');
+    await mgr.terminate('bridge-test');
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
+
 
   test('ensureRunning 懒启动成功且不重复 spawn', async () => {
     const session = registry.create('ensure-test', { workdir: '/tmp', cliPlugin: 'mock' });

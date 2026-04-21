@@ -3,31 +3,10 @@ import type { SessionRegistry } from './session-registry.js';
 import type { CLIPlugin } from './plugins/types.js';
 import type { Session } from './types.js';
 import { Writable } from 'stream';
+import { generateBridgeScript } from './mcp-bridge.js';
 
 const MAX_CRASH_COUNT = 3;
 const RESTART_DELAYS = [1000, 3000, 10000]; // ms
-
-const CONTINUATION_PROMPTS = new Set([
-  '继续',
-  '继续执行',
-  '请继续',
-  '请继续执行',
-  '接着做',
-  '接着执行',
-]);
-
-function normalizeIMPrompt(text: string): string {
-  const trimmed = text.trim();
-  if (!CONTINUATION_PROMPTS.has(trimmed)) {
-    return text;
-  }
-
-  return [
-    '继续上一个未完成任务。',
-    '不要只描述计划。',
-    '请继续实际执行，必要时继续调用工具完成调研、读取、修改、验证，并把关键进展回传到当前会话。',
-  ].join('\n');
-}
 
 type CLIPluginResolver = CLIPlugin | ((session: Session) => CLIPlugin);
 
@@ -37,10 +16,12 @@ export class IMWorkerManager {
   private _processes = new Map<string, ChildProcess>();
   private _restartTimers = new Map<string, NodeJS.Timeout>();
   private _spawnPromises = new Map<string, Promise<void>>();
+  private _approvalSocketPath: string | undefined;
 
-  constructor(pluginResolver: CLIPluginResolver, registry: SessionRegistry) {
+  constructor(pluginResolver: CLIPluginResolver, registry: SessionRegistry, approvalSocketPath?: string) {
     this._pluginResolver = pluginResolver;
     this._registry = registry;
+    this._approvalSocketPath = approvalSocketPath;
   }
 
   private _resolvePlugin(session: Session): CLIPlugin {
@@ -67,7 +48,10 @@ export class IMWorkerManager {
         this._processes.delete(name);
       }
 
-      const bridgePath = `/tmp/mm-coder-mcp-bridge-${session.sessionId}.js`;
+      const bridgePath = await generateBridgeScript(
+        session.sessionId,
+        this._approvalSocketPath ?? `/tmp/mm-coder-approval-${session.sessionId}.sock`,
+      );
       const { command, args } = this._resolvePlugin(session).buildIMWorkerCommand(session, bridgePath);
       const proc = spawn(command, args, {
         cwd: session.workdir,
@@ -184,7 +168,7 @@ export class IMWorkerManager {
       type: 'user',
       message: {
         role: 'user',
-        content: [{ type: 'text', text: normalizeIMPrompt(text) }],
+        content: [{ type: 'text', text }],
       },
     });
 

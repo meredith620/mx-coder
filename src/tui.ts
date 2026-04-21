@@ -22,7 +22,8 @@ export interface TuiStateStore {
 }
 
 export interface TuiActions {
-  createSession(input: { name: string; workdir: string; cli: string }): Promise<Record<string, unknown>>;
+  createSession(input: { name: string; workdir: string; cli: string; spaceStrategy?: 'thread' | 'channel' }): Promise<Record<string, unknown>>;
+  openSession(input: { name: string; spaceStrategy?: 'thread' | 'channel' }): Promise<Record<string, unknown>>;
   getStatus(name: string): Promise<Record<string, unknown>>;
   removeSession(name: string): Promise<void>;
   importSession(input: { sessionId: string; name: string; workdir: string; cli: string }): Promise<Record<string, unknown>>;
@@ -130,11 +131,22 @@ export function createTuiActions(client: IPCClient): TuiActions {
         name: input.name,
         workdir: input.workdir,
         cli: input.cli,
+        ...(input.spaceStrategy ? { spaceStrategy: input.spaceStrategy } : {}),
       });
       if (!response.ok) {
         throw new Error(response.error.message);
       }
       return response.data.session as Record<string, unknown>;
+    },
+    async openSession(input) {
+      const response = await client.send('open', {
+        name: input.name,
+        ...(input.spaceStrategy ? { spaceStrategy: input.spaceStrategy } : {}),
+      });
+      if (!response.ok) {
+        throw new Error(response.error.message);
+      }
+      return response.data as Record<string, unknown>;
     },
     async getStatus(name) {
       const response = await client.send('status', {});

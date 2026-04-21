@@ -107,6 +107,18 @@ describe('mm-coder CLI E2E', () => {
     expect(stdout).toContain('mm-coder');
   });
 
+  test('create 支持单次 spaceStrategy override 且不报错', async () => {
+    const workdir = path.join(tmpDir, 'override-app');
+    fs.mkdirSync(workdir, { recursive: true });
+
+    const { stdout, code } = await runCLIWithSocket(
+      ['create', 'override-demo', '--workdir', workdir, '--space-strategy', 'channel'],
+      socketPath, pidFile,
+    );
+    expect(code).toBe(0);
+    expect(stdout).toContain("override-demo");
+  });
+
   test('create bug-fix --workdir <dir> 创建 session', async () => {
     const workdir = path.join(tmpDir, 'myapp');
     fs.mkdirSync(workdir, { recursive: true });
@@ -118,7 +130,6 @@ describe('mm-coder CLI E2E', () => {
     expect(code).toBe(0);
     expect(stdout).toContain("bug-fix");
 
-    // Verify via IPC
     const res = await client.send('list', {});
     const sessions = res.data!.sessions as Array<Record<string, unknown>>;
     expect(sessions.some(s => s.name === 'bug-fix')).toBe(true);
@@ -243,6 +254,30 @@ describe('mm-coder CLI E2E', () => {
     } finally {
       process.chdir(originalCwd);
       fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  test('open 支持单次 spaceStrategy override 且不回写全局配置', async () => {
+    const originalImPlugin = (daemon as any)._imPlugin;
+    const originalImPluginName = (daemon as any)._imPluginName;
+    const originalImPlugins = new Map((daemon as any)._imPlugins);
+    const mockIM = new (await import('../helpers/mock-im-plugin.js')).MockIMPlugin();
+    (daemon as any)._imPlugin = mockIM;
+    (daemon as any)._imPluginName = 'mattermost';
+    (daemon as any)._imPlugins.set('mattermost', mockIM);
+
+    try {
+      const { stdout, code } = await runCLIWithSocket(
+        ['open', 'bug-fix', '--space-strategy', 'channel'],
+        socketPath, pidFile,
+      );
+      expect(code).toBe(0);
+      expect(stdout).toContain('"spaceStrategy"');
+      expect(stdout).toContain('channel');
+    } finally {
+      (daemon as any)._imPlugin = originalImPlugin;
+      (daemon as any)._imPluginName = originalImPluginName;
+      (daemon as any)._imPlugins = originalImPlugins;
     }
   });
 
