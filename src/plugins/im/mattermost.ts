@@ -316,7 +316,7 @@ export class MattermostPlugin implements IMPlugin {
       '👎 No',
       '⏹️ Cancel',
       '',
-      'fallback：`/approve last once` ` /approve last session` ` /deny last` ` /cancel last`',
+      'fallback：`/approve once` ` /approve session` ` /deny` ` /cancel`',
     ].join('\n');
   }
 
@@ -456,12 +456,12 @@ export class MattermostPlugin implements IMPlugin {
 
     if (event.event === 'reaction_added' || event.event === 'reaction_removed') {
       const reactionData = event.data as Record<string, unknown> | undefined;
-      if (!reactionData) return;
-      const channelId = reactionData.channel_id as string | undefined;
+      const broadcast = event.broadcast as Record<string, unknown> | undefined;
+      const channelId = (reactionData?.channel_id as string | undefined) ?? (broadcast?.channel_id as string | undefined);
       if (channelId !== this._config.channelId) return;
-      const postId = reactionData.post_id as string | undefined;
-      const userId = reactionData.user_id as string | undefined;
-      const emoji = normalizeReactionEmoji(reactionData.emoji_name);
+      const postId = (reactionData?.post_id as string | undefined) ?? (broadcast?.post_id as string | undefined);
+      const userId = (reactionData?.user_id as string | undefined) ?? (broadcast?.user_id as string | undefined);
+      const emoji = normalizeReactionEmoji((reactionData?.emoji_name as unknown) ?? (broadcast?.emoji_name as unknown));
       if (!postId || !userId || !emoji) return;
       if (userId === this._botUserId) return;
 
@@ -577,6 +577,28 @@ export class MattermostPlugin implements IMPlugin {
     });
   }
 
+  async addReactions(messageId: string, emojis: string[]): Promise<void> {
+    const userId = this.getBotUserId();
+    for (const emoji of emojis) {
+      const emoji_name = emoji === '👍' ? '+1'
+        : emoji === '✅' ? 'white_check_mark'
+        : emoji === '👎' ? '-1'
+        : emoji === '⏹️' ? 'stop_button'
+        : emoji;
+      await this._apiRequest('/api/v4/reactions', {
+        method: 'POST',
+        body: JSON.stringify({ user_id: userId, post_id: messageId, emoji_name }),
+      });
+    }
+  }
+
+  async listReactions(messageId: string): Promise<Array<{ userId: string; emoji: string }>> {
+    const res = await this._apiGet<Array<{ user_id?: string; emoji_name?: string }>>(`/api/v4/posts/${messageId}/reactions`);
+    return res
+      .filter((item) => typeof item.user_id === 'string' && typeof item.emoji_name === 'string' && item.user_id !== this._botUserId)
+      .map((item) => ({ userId: item.user_id!, emoji: normalizeReactionEmoji(item.emoji_name) ?? item.emoji_name! }));
+  }
+
   async requestApproval(target: MessageTarget, request: ApprovalRequest): Promise<string | undefined> {
     const message = this._formatApprovalMessage(request);
     const res = await this._apiRequest('/api/v4/posts', {
@@ -595,6 +617,9 @@ export class MattermostPlugin implements IMPlugin {
       }),
     });
     const data = await res.json() as { id?: string };
+    if (data.id) {
+      await this.addReactions(data.id, ['👍', '✅', '👎', '⏹️']);
+    }
     return data.id;
   }
 }

@@ -90,7 +90,7 @@ s.on('connect', () => {
 setTimeout(() => { console.log(buf.trim()); s.destroy(); }, 2000);
 " 2>/dev/null)`,
       // Check if allow:true
-      'ALLOW=$(echo "$RESPONSE" | node -e "const d=require(\'fs\').readFileSync(\'/dev/stdin\',\'utf8\'); try{ const r=JSON.parse(d.trim()); console.log(r.result&&r.result.allow?\'yes\':\'no\'); }catch(e){console.log(\'no\');}")',
+      'ALLOW=$(echo "$RESPONSE" | node -e "const d=require(\'fs\').readFileSync(\'/dev/stdin\',\'utf8\'); try{ const r=JSON.parse(d.trim()); const c=Array.isArray(r.result&&r.result.content)?r.result.content:[]; const t=(c.find(x=>x&&x.type===\'text\')||{}).text||\'\'; const p=JSON.parse(t); console.log(p&&p.behavior===\'allow\'?\'yes\':\'no\'); }catch(e){console.log(\'no\');}")',
       'if [ "$ALLOW" = "yes" ]; then',
       '  echo \'{"type":"assistant","payload":{"message":{"content":[{"type":"text","text":"approved and executed"}]}}}\'',
       '  echo \'{"type":"result","payload":{"subtype":"success","result":"done"}}\'',
@@ -181,7 +181,7 @@ s.on('connect', () => {
 });
 setTimeout(() => { console.log(buf.trim()); s.destroy(); }, 2000);
 " 2>/dev/null)`,
-      'ALLOW=$(echo "$RESPONSE" | node -e "const d=require(\'fs\').readFileSync(\'/dev/stdin\',\'utf8\'); try{ const r=JSON.parse(d.trim()); console.log(r.result&&r.result.allow?\'yes\':\'no\'); }catch(e){console.log(\'no\');}")',
+      'ALLOW=$(echo "$RESPONSE" | node -e "const d=require(\'fs\').readFileSync(\'/dev/stdin\',\'utf8\'); try{ const r=JSON.parse(d.trim()); const c=Array.isArray(r.result&&r.result.content)?r.result.content:[]; const t=(c.find(x=>x&&x.type===\'text\')||{}).text||\'\'; const p=JSON.parse(t); console.log(p&&p.behavior===\'allow\'?\'yes\':\'no\'); }catch(e){console.log(\'no\');}")',
       'if [ "$ALLOW" = "yes" ]; then',
       '  echo \'{"type":"assistant","payload":{"message":{"content":[{"type":"text","text":"should not appear"}]}}}\'',
       'fi',

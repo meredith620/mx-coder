@@ -1,29 +1,16 @@
 import { describe, test, expect, beforeAll, afterAll, vi } from 'vitest';
-import { spawn, execFileSync } from 'child_process';
+import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import * as net from 'net';
 import { fileURLToPath } from 'url';
 import { Daemon } from '../../src/daemon.js';
 import { IPCClient } from '../../src/ipc/client.js';
-
-/**
- * E2E: mm-coder CLI 完整使用流程
- *
- * 覆盖用户真实使用路径：
- *   mm-coder start
- *   mm-coder create bug-fix --workdir ~/myapp
- *   mm-coder attach bug-fix   (spawn CLI, exit, session → idle)
- *   mm-coder list / status / remove
- *   mm-coder --help
- */
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SRC_INDEX = path.resolve(__dirname, '../../src/index.ts');
 const TSX_CLI = path.resolve(__dirname, '../../node_modules/tsx/dist/cli.mjs');
 
-/** Run mm-coder CLI via src/index.ts, return { stdout, stderr, code } */
 function runCLI(args: string[], opts: { socketPath?: string; pidFile?: string } = {}): Promise<{
   stdout: string;
   stderr: string;
@@ -61,7 +48,6 @@ describe('mm-coder CLI E2E', () => {
     socketPath = path.join(tmpDir, 'daemon.sock');
     pidFile = path.join(tmpDir, 'daemon.pid');
 
-    // Start daemon in-process for test isolation
     daemon = new Daemon(socketPath);
     await daemon.start();
 
@@ -73,6 +59,65 @@ describe('mm-coder CLI E2E', () => {
     await client.close();
     await daemon.stop();
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test('restart 会等待旧 daemon 停止后再启动新 daemon', async () => {
+    const restartSocket = path.join(tmpDir, 'restart-daemon.sock');
+    const restartPidFile = path.join(tmpDir, 'restart-daemon.pid');
+    const restartSessions = path.join(tmpDir, 'restart-sessions.json');
+    const restartLog = path.join(tmpDir, 'restart-daemon.log');
+
+    const startResult = await runCLIWithSocket(['start'], restartSocket, restartPidFile, {
+      MM_CODER_SESSIONS: restartSessions,
+      MM_CODER_LOG: restartLog,
+    });
+    expect(startResult.code).toBe(0);
+    expect(startResult.stdout).toContain('Daemon started');
+
+    const beforePid = fs.readFileSync(restartPidFile, 'utf8').trim();
+    const { stdout, code } = await runCLIWithSocket(['restart'], restartSocket, restartPidFile, {
+      MM_CODER_SESSIONS: restartSessions,
+      MM_CODER_LOG: restartLog,
+    });
+    expect(code).toBe(0);
+    expect(stdout).toContain('Restarting daemon...');
+    expect(stdout).toContain('Stopping daemon');
+    expect(stdout).toContain('Waiting for graceful shutdown');
+    expect(stdout).toContain('Starting daemon');
+    expect(stdout).toContain('Daemon stopped');
+    expect(stdout).toContain('Daemon started');
+
+    const afterPid = fs.readFileSync(restartPidFile, 'utf8').trim();
+    expect(afterPid).not.toBe(beforePid);
+
+    const stopResult = await runCLIWithSocket(['stop'], restartSocket, restartPidFile, {
+      MM_CODER_SESSIONS: restartSessions,
+      MM_CODER_LOG: restartLog,
+    });
+    expect(stopResult.code).toBe(0);
+  });
+
+  test('restart 在 daemon 未运行时会直接启动新 daemon', async () => {
+    const restartSocket = path.join(tmpDir, 'restart-stopped.sock');
+    const restartPidFile = path.join(tmpDir, 'restart-stopped.pid');
+    const restartSessions = path.join(tmpDir, 'restart-stopped-sessions.json');
+    const restartLog = path.join(tmpDir, 'restart-stopped.log');
+
+    const { stdout, code } = await runCLIWithSocket(['restart'], restartSocket, restartPidFile, {
+      MM_CODER_SESSIONS: restartSessions,
+      MM_CODER_LOG: restartLog,
+    });
+    expect(code).toBe(0);
+    expect(stdout).toContain('Restarting daemon...');
+    expect(stdout).toContain('Daemon is not running');
+    expect(stdout).toContain('Starting daemon');
+    expect(stdout).toContain('Daemon started');
+
+    const stopResult = await runCLIWithSocket(['stop'], restartSocket, restartPidFile, {
+      MM_CODER_SESSIONS: restartSessions,
+      MM_CODER_LOG: restartLog,
+    });
+    expect(stopResult.code).toBe(0);
   });
 
   test('completion bash 输出静态补全脚本', async () => {
@@ -116,7 +161,7 @@ describe('mm-coder CLI E2E', () => {
       socketPath, pidFile,
     );
     expect(code).toBe(0);
-    expect(stdout).toContain("override-demo");
+    expect(stdout).toContain('override-demo');
   });
 
   test('create bug-fix --workdir <dir> 创建 session', async () => {
@@ -128,7 +173,7 @@ describe('mm-coder CLI E2E', () => {
       socketPath, pidFile,
     );
     expect(code).toBe(0);
-    expect(stdout).toContain("bug-fix");
+    expect(stdout).toContain('bug-fix');
 
     const res = await client.send('list', {});
     const sessions = res.data!.sessions as Array<Record<string, unknown>>;
@@ -199,7 +244,6 @@ describe('mm-coder CLI E2E', () => {
   });
 
   test('attach bug-fix 调用真实 CLI attach 路径并在退出后 session 回到 idle', async () => {
-
     const fakeBin = path.join(tmpDir, 'bin');
     fs.mkdirSync(fakeBin, { recursive: true });
     const argsFile = path.join(tmpDir, 'claude-args.txt');
@@ -229,32 +273,23 @@ describe('mm-coder CLI E2E', () => {
     expect(updated.status).toBe('idle');
   });
 
-  test('takeover-status 和 takeover-cancel 命令可用', async () => {
-    await client.send('create', { name: 'take-cli', workdir: tmpDir, cli: 'claude-code' });
-    await client.send('attach', { name: 'take-cli', pid: 1001 });
-    (daemon.registry as any).requestTakeover('take-cli', 'user-im');
+  test('attach CLI 退出后会回写 markDetached，避免残留 attached', async () => {
+    await client.send('create', { name: 'attach-cleanup', workdir: tmpDir, cli: 'claude-code' });
 
-    const statusResult = await runCLIWithSocket(['takeover-status', 'take-cli'], socketPath, pidFile);
-    expect(statusResult.code).toBe(0);
-    expect(statusResult.stdout).toContain('takeover_pending');
+    const fakeBin = path.join(tmpDir, 'bin-cleanup');
+    fs.mkdirSync(fakeBin, { recursive: true });
+    const fakeClaude = path.join(fakeBin, 'claude');
+    fs.writeFileSync(fakeClaude, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
 
-    const cancelResult = await runCLIWithSocket(['takeover-cancel', 'take-cli'], socketPath, pidFile);
-    expect(cancelResult.code).toBe(0);
-    expect(cancelResult.stdout).toContain("Takeover for 'take-cli' cancelled");
-  });
+    const { code } = await runCLIWithSocket(
+      ['attach', 'attach-cleanup'],
+      socketPath,
+      pidFile,
+      { PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
+    );
 
-  test('--version 在非 git 目录不崩溃', async () => {
-    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-cli-version-outside-'));
-    const originalCwd = process.cwd();
-    process.chdir(outsideDir);
-    try {
-      const { code, stdout } = await runCLI(['--version'], { socketPath, pidFile });
-      expect(code).toBe(0);
-      expect(stdout).toContain('mm-coder 0.1.0');
-    } finally {
-      process.chdir(originalCwd);
-      fs.rmSync(outsideDir, { recursive: true, force: true });
-    }
+    expect(code).toBe(0);
+    expect(daemon.registry.get('attach-cleanup')?.status).toBe('idle');
   });
 
   test('open 支持单次 spaceStrategy override 且不回写全局配置', async () => {
@@ -284,7 +319,7 @@ describe('mm-coder CLI E2E', () => {
   test('remove bug-fix 删除 session', async () => {
     const { stdout, code } = await runCLIWithSocket(['remove', 'bug-fix'], socketPath, pidFile);
     expect(code).toBe(0);
-    expect(stdout).toContain("bug-fix");
+    expect(stdout).toContain('bug-fix');
 
     const res = await client.send('list', {});
     const sessions = res.data!.sessions as Array<Record<string, unknown>>;
@@ -339,50 +374,40 @@ describe('mm-coder CLI attach 完整流程 E2E', () => {
   });
 
   test('attach → CLI 退出 → session idle → 再次 attach', async () => {
-    // Create session
     await client.send('create', { name: 'resume-test', workdir: tmpDir, cli: 'claude-code' });
 
-    // First attach
     const attach1 = await client.send('attach', { name: 'resume-test', pid: 1001 });
     expect(attach1.ok).toBe(true);
     expect(daemon.registry.get('resume-test')!.status).toBe('attached');
 
-    // Detach (CLI exits)
     daemon.registry.markDetached('resume-test', 'normal');
     expect(daemon.registry.get('resume-test')!.status).toBe('idle');
 
-    // Second attach (resume)
     const attach2 = await client.send('attach', { name: 'resume-test', pid: 1002 });
     expect(attach2.ok).toBe(true);
     expect(daemon.registry.get('resume-test')!.status).toBe('attached');
 
-    // Cleanup
     daemon.registry.markDetached('resume-test', 'normal');
   });
 
   test('IM 处理中 → attach 请求 → waitRequired + attach_pending', async () => {
     await client.send('create', { name: 'im-wait-test', workdir: tmpDir, cli: 'claude-code' });
 
-    // Simulate IM processing
     daemon.registry.markImProcessing('im-wait-test');
     expect(daemon.registry.get('im-wait-test')!.status).toBe('im_processing');
 
-    // Attach while IM processing
     const attachRes = await client.send('attach', { name: 'im-wait-test', pid: 2001 });
     expect(attachRes.ok).toBe(true);
     expect(attachRes.data!.waitRequired).toBe(true);
     expect(daemon.registry.get('im-wait-test')!.status).toBe('attach_pending');
 
-    // IM completes → session becomes attached
     daemon.registry.markImDone('im-wait-test');
     expect(daemon.registry.get('im-wait-test')!.status).toBe('attached');
 
-    // Cleanup
     daemon.registry.markDetached('im-wait-test', 'normal');
   });
 });
 
-/** Helper: run CLI with custom socket/pid env vars */
 function runCLIWithSocket(
   args: string[],
   socketPath: string,

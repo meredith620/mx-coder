@@ -21,7 +21,7 @@ function mockApprovalDecision(imPlugin: IMPlugin, requestId: string, decision: '
 }
 
 function approvalCommandHelp(): string {
-  return 'fallback：`/approve last once` `/approve last session` `/deny last` `/cancel last`';
+  return 'fallback：`/approve once` `/approve session` `/deny` `/cancel`';
 }
 
 function reactionToApprovalDecision(emoji: string): { decision: 'approved' | 'denied' | 'cancelled'; scope: 'once' | 'session' } | undefined {
@@ -139,11 +139,20 @@ export class Daemon {
       resolveContext: (sessionId: string) => {
         const session = this.registry.list().find((item) => item.sessionId === sessionId);
         if (!session) return undefined;
+        const activeMessage = session.messageQueue.find((message) => message.status === 'running' || message.status === 'waiting_approval');
+        const operatorId = activeMessage?.userId ?? session.activeOperatorId;
         const binding = session.imBindings[0];
         if (!binding) {
           return {
             target: { plugin: this._imPluginName ?? getDefaultIMPluginName(), threadId: '' },
             sessionName: session.name,
+            ...(operatorId ? { operatorId } : {}),
+            ...(activeMessage?.approvalState !== undefined || activeMessage?.approvalScope !== undefined
+              ? { message: {
+                  ...(activeMessage?.approvalState !== undefined ? { approvalState: activeMessage.approvalState } : {}),
+                  ...(activeMessage?.approvalScope !== undefined ? { approvalScope: activeMessage.approvalScope } : {}),
+                } }
+              : {}),
           };
         }
         return {
@@ -153,10 +162,19 @@ export class Daemon {
             threadId: binding.bindingKind === 'channel' ? '' : binding.threadId,
           },
           sessionName: session.name,
+          ...(operatorId ? { operatorId } : {}),
+          ...(activeMessage?.approvalState !== undefined || activeMessage?.approvalScope !== undefined
+            ? { message: {
+                ...(activeMessage?.approvalState !== undefined ? { approvalState: activeMessage.approvalState } : {}),
+                ...(activeMessage?.approvalScope !== undefined ? { approvalScope: activeMessage.approvalScope } : {}),
+              } }
+            : {}),
         };
       },
     });
     await this._approvalHandler.listen();
+
+    this._startApprovalReactionPollLoop();
 
     this._imWorkerManager = new IMWorkerManager(
       (session: Session) => getCLIPlugin(session.cliPlugin),
@@ -187,6 +205,70 @@ export class Daemon {
 
     this._imDispatcher.start();
     console.log(`IM dispatcher started for plugins: ${pluginNames.join(', ')}`);
+  }
+
+  private _ensureIMActorRoles(session: Session, userId?: string): void {
+    if (!userId) return;
+    if (!this._acl.hasRole(session.sessionId, userId, 'owner')) {
+      this._acl.grantRole(session.sessionId, userId, 'owner');
+    }
+  }
+
+  private _startApprovalReactionPollLoop(): void {
+    const plugin = this._imPlugin;
+    const approvalManager = this._approvalManager;
+    const listReactions = plugin?.listReactions;
+    if (!plugin || !approvalManager || !listReactions) {
+      return;
+    }
+
+    const tick = async (): Promise<void> => {
+      for (const state of approvalManager.getAllApprovalStates()) {
+        if (state.decision !== 'pending' || !state.interactionMessageId) {
+          continue;
+        }
+        if (state.lastReactionPollAt && Date.now() - state.lastReactionPollAt < 1500) {
+          continue;
+        }
+        approvalManager.markReactionPoll(state.requestId);
+        const reactions = await listReactions.call(plugin, state.interactionMessageId).catch(() => []);
+        const reaction = reactions.find((item) => item.emoji === '👍' || item.emoji === '✅' || item.emoji === '👎' || item.emoji === '⏹️');
+        if (!reaction) {
+          continue;
+        }
+        const mapped = reactionToApprovalDecision(reaction.emoji);
+        if (!mapped) {
+          continue;
+        }
+        const session = this.registry.list().find((item) => item.sessionId === state.sessionId);
+        if (!session) {
+          continue;
+        }
+        this._ensureIMActorRoles(session, reaction.userId);
+        const binding = session.imBindings[0];
+        if (!binding) {
+          continue;
+        }
+        const polledMessage: IncomingMessage = {
+          plugin: binding.plugin,
+          threadId: binding.bindingKind === 'channel' ? '' : binding.threadId,
+          isTopLevel: false,
+          userId: reaction.userId,
+          text: '',
+          messageId: `reaction-poll-${state.requestId}`,
+          createdAt: new Date().toISOString(),
+          dedupeKey: `reaction-poll-${state.requestId}`,
+          reaction: { action: 'added', emoji: reaction.emoji, postId: state.interactionMessageId },
+          ...(binding.channelId ? { channelId: binding.channelId } : {}),
+        };
+        await this._finalizeApprovalDecision(polledMessage, binding.channelId ?? '', state.requestId, mapped.decision, mapped.scope);
+      }
+    };
+
+    const timer = setInterval(() => {
+      void tick();
+    }, 2000);
+    process.on('exit', () => clearInterval(timer));
   }
 
   private _getIMPlugin(pluginName: string): IMPlugin | null {
@@ -300,6 +382,7 @@ export class Daemon {
       msg.plugin,
       conversationKind,
     );
+    this._ensureIMActorRoles(session, msg.userId);
     if (session.status === 'attached' || session.status === 'takeover_pending') {
       await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
         kind: 'text',
@@ -401,6 +484,28 @@ export class Daemon {
       ? await this._approvalManager.cancel(requestId)
       : await this._approvalManager.decideByApprover(requestId, msg.userId, { decision, scope });
 
+    const session = this.registry.list().find((item) => item.sessionId === state.sessionId);
+    if (session) {
+      const activeMessage = session.messageQueue.find((message) => message.status === 'running' || message.status === 'waiting_approval');
+      if (activeMessage) {
+        const nextApprovalState = result.status === 'approved'
+          ? 'approved'
+          : result.status === 'denied'
+            ? 'denied'
+            : result.status === 'cancelled'
+              ? 'cancelled'
+              : result.status === 'expired'
+                ? 'expired'
+                : undefined;
+        if (nextApprovalState !== undefined) {
+          activeMessage.approvalState = nextApprovalState;
+        }
+        if (scope === 'session') {
+          activeMessage.approvalScope = 'session';
+        }
+      }
+    }
+
     if (imPlugin) {
       mockApprovalDecision(imPlugin, requestId, decision, scope);
       const stateLabel = decision === 'approved'
@@ -408,10 +513,14 @@ export class Daemon {
         : decision === 'denied'
           ? '❌ 已拒绝本次操作'
           : '⏹️ 已取消本次审批';
-      await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
-        kind: 'text',
-        text: `${stateLabel}（${result.status}）`,
-      });
+      const replyText = `${stateLabel}（${result.status}）`;
+      const alreadySent = msg.reaction?.postId === state.interactionMessageId;
+      if (!alreadySent) {
+        await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+          kind: 'text',
+          text: replyText,
+        });
+      }
     }
   }
 
@@ -425,13 +534,14 @@ export class Daemon {
     if (!this._approvalManager) return;
 
     const parts = msg.text.trim().split(/\s+/);
-    const requestId = await this._resolveApprovalRequestId(msg, parts[1]);
-    const scope = parts[2] === 'session' ? 'session' : 'once';
+    const requestIdToken = parts[1] === 'once' || parts[1] === 'session' ? undefined : parts[1];
+    const requestId = await this._resolveApprovalRequestId(msg, requestIdToken);
+    const scope = parts[1] === 'session' || parts[2] === 'session' ? 'session' : 'once';
     if (!requestId) {
       if (imPlugin) {
         await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
           kind: 'text',
-          text: `用法：/${decision === 'approved' ? 'approve' : decision === 'denied' ? 'deny' : 'cancel'} last [once|session]`,
+          text: `用法：/${decision === 'approved' ? 'approve [once|session]' : decision === 'denied' ? 'deny' : 'cancel'}`,
         });
       }
       return;
@@ -668,6 +778,7 @@ export class Daemon {
       });
       return;
     }
+    this._ensureIMActorRoles(session, msg.userId);
 
     const binding = session.imBindings.find((item) => item.plugin === msg.plugin);
     this._debugLog({
@@ -812,6 +923,8 @@ export class Daemon {
   async start(): Promise<void> {
     if (this._store) {
       await this._store.load(this.registry);
+      this.registry.reconcileProcessLiveness();
+      await this._store.flush();
     }
     await this._server.listen();
   }
@@ -868,12 +981,15 @@ export class Daemon {
       // Creator becomes owner
       if (actor?.userId) {
         this._acl.grant(session, actor.userId, 'owner');
+        this._acl.grantRole(session.sessionId, actor.userId, 'owner');
       }
 
       return { session: this._serializeSession(session) };
     });
 
     this._server.handle('list', async () => {
+      this.registry.reconcileProcessLiveness();
+      if (this._store) void this._store.flush();
       const sessions = this.registry.list().map(s => this._serializeSession(s));
       return { sessions };
     });
@@ -905,6 +1021,8 @@ export class Daemon {
     });
 
     this._server.handle('status', async () => {
+      this.registry.reconcileProcessLiveness();
+      if (this._store) void this._store.flush();
       const sessions = this.registry.list().map(s => this._serializeSession(s));
       return { pid: process.pid, sessions };
     });
@@ -948,6 +1066,7 @@ export class Daemon {
     this._server.handle('attach', async (args, actor, socket) => {
       const name = args['name'] as string;
       const pid = args['pid'] as number;
+      this.registry.reconcileProcessLiveness(name);
       const session = this.registry.get(name);
 
       if (!session) {
@@ -1078,6 +1197,7 @@ export class Daemon {
 
       if (actor?.userId) {
         this._acl.grant(session, actor.userId, 'owner');
+        this._acl.grantRole(session.sessionId, actor.userId, 'owner');
       }
 
       return { session: this._serializeSession(session) };

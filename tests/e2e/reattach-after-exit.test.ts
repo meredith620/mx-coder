@@ -19,13 +19,11 @@ describe('Re-attach after CLI exit E2E', () => {
     socketPath = path.join(tmpDir, 'daemon.sock');
     const persistencePath = path.join(tmpDir, 'sessions.json');
 
-    // Start daemon with isolated persistence
     daemonProc = spawn(process.execPath, ['--import', 'tsx', DAEMON_ENTRY, socketPath, '', persistencePath], {
       stdio: 'ignore',
       detached: false,
     });
 
-    // Wait for socket
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Daemon socket timeout')), 5000);
       const check = setInterval(() => {
@@ -41,26 +39,75 @@ describe('Re-attach after CLI exit E2E', () => {
   afterEach(async () => {
     if (daemonProc) {
       daemonProc.kill('SIGTERM');
-      // Wait for daemon to exit
       await new Promise<void>((resolve) => {
         if (!daemonProc) { resolve(); return; }
         daemonProc.on('exit', () => resolve());
-        setTimeout(() => resolve(), 1000); // Fallback timeout
+        setTimeout(() => resolve(), 1000);
       });
       daemonProc = null;
     }
-    // Additional wait for file handles to be released
     await new Promise(resolve => setTimeout(resolve, 100));
     if (fs.existsSync(tmpDir)) {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 
+  it('daemon 重启后 list/status 会清理残留 attached 死 pid', async () => {
+    const persistencePath = path.join(tmpDir, 'sessions.json');
+
+    if (daemonProc) {
+      daemonProc.kill('SIGTERM');
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+
+    fs.writeFileSync(persistencePath, JSON.stringify({
+      version: 1,
+      sessions: [{
+        name: 'stale-attached',
+        sessionId: 'sess-stale-attached',
+        cliPlugin: 'claude-code',
+        workdir: tmpDir,
+        status: 'attached',
+        lifecycleStatus: 'active',
+        initState: 'initialized',
+        revision: 1,
+        spawnGeneration: 0,
+        imBindings: [],
+        messageQueue: [],
+        createdAt: new Date().toISOString(),
+        lastActivityAt: new Date().toISOString(),
+      }],
+    }));
+
+    daemonProc = spawn(process.execPath, ['--import', 'tsx', DAEMON_ENTRY, socketPath, '', persistencePath], {
+      stdio: 'ignore',
+      detached: false,
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Daemon socket timeout after restart')), 5000);
+      const check = setInterval(() => {
+        if (fs.existsSync(socketPath)) {
+          clearInterval(check);
+          clearTimeout(timeout);
+          resolve();
+        }
+      }, 50);
+    });
+
+    const client = new IPCClient(socketPath);
+    await client.connect();
+    const listRes = await client.send('list', {});
+    expect(listRes.ok).toBe(true);
+    const session = (listRes.data?.sessions as Array<{ name: string; status: string }>).find(s => s.name === 'stale-attached');
+    expect(session?.status).toBe('idle');
+    await client.close();
+  });
+
   it('attach → CLI exits → markDetached → re-attach succeeds', async () => {
     const client = new IPCClient(socketPath);
     await client.connect();
 
-    // Create session
     const createRes = await client.send('create', {
       name: 'test-session',
       workdir: tmpDir,
@@ -71,7 +118,6 @@ describe('Re-attach after CLI exit E2E', () => {
     }
     expect(createRes.ok).toBe(true);
 
-    // First attach
     const attach1Res = await client.send('attach', {
       name: 'test-session',
       pid: process.pid,
@@ -79,21 +125,18 @@ describe('Re-attach after CLI exit E2E', () => {
     expect(attach1Res.ok).toBe(true);
     expect(attach1Res.data?.session.status).toBe('attached');
 
-    // Simulate CLI exit: send markDetached
     const markDetachedRes = await client.send('markDetached', {
       name: 'test-session',
       exitReason: 'normal',
     });
     expect(markDetachedRes.ok).toBe(true);
 
-    // Check session is now idle
     const statusRes = await client.send('status', {});
     expect(statusRes.ok).toBe(true);
     const sessions = statusRes.data?.sessions as Array<{ name: string; status: string }>;
     const session = sessions.find(s => s.name === 'test-session');
     expect(session?.status).toBe('idle');
 
-    // Re-attach should succeed (this was failing with INVALID_STATE_TRANSITION before fix)
     const attach2Res = await client.send('attach', {
       name: 'test-session',
       pid: process.pid + 1,
@@ -107,7 +150,6 @@ describe('Re-attach after CLI exit E2E', () => {
   it('attach → CLI exits → persistence flush → daemon restart → re-attach succeeds', async () => {
     const persistencePath = path.join(tmpDir, 'sessions.json');
 
-    // Restart daemon with persistence
     if (daemonProc) {
       daemonProc.kill('SIGTERM');
       await new Promise(resolve => setTimeout(resolve, 200));
@@ -132,7 +174,6 @@ describe('Re-attach after CLI exit E2E', () => {
     const client = new IPCClient(socketPath);
     await client.connect();
 
-    // Create session
     const createRes = await client.send('create', {
       name: 'persist-session',
       workdir: tmpDir,
@@ -140,26 +181,21 @@ describe('Re-attach after CLI exit E2E', () => {
     });
     expect(createRes.ok).toBe(true);
 
-    // Attach
     const attachRes = await client.send('attach', {
       name: 'persist-session',
       pid: process.pid,
     });
     expect(attachRes.ok).toBe(true);
 
-    // Mark detached
     await client.send('markDetached', {
       name: 'persist-session',
       exitReason: 'normal',
     });
 
     await client.close();
-
-    // Verify persistence file exists
     expect(fs.existsSync(persistencePath)).toBe(true);
 
-    // Restart daemon
-    daemonProc.kill('SIGTERM');
+    daemonProc!.kill('SIGTERM');
     await new Promise(resolve => setTimeout(resolve, 200));
 
     daemonProc = spawn(process.execPath, ['--import', 'tsx', DAEMON_ENTRY, socketPath, '', persistencePath], {
@@ -178,7 +214,6 @@ describe('Re-attach after CLI exit E2E', () => {
       }, 50);
     });
 
-    // Reconnect and verify session persisted
     const client2 = new IPCClient(socketPath);
     await client2.connect();
 
@@ -189,7 +224,6 @@ describe('Re-attach after CLI exit E2E', () => {
     expect(session).toBeDefined();
     expect(session?.status).toBe('idle');
 
-    // Re-attach after restart
     const reattachRes = await client2.send('attach', {
       name: 'persist-session',
       pid: process.pid + 2,

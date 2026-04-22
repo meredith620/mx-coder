@@ -53,7 +53,7 @@ describe('MCP Bridge script generation', () => {
     const server = net.createServer(socket => {
       socket.on('data', chunk => {
         requests.push(chunk.toString());
-        socket.write(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { allow: true } }) + '\n');
+        socket.write(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: 'allow' }] } }) + '\n');
       });
     });
 
@@ -81,7 +81,8 @@ describe('MCP Bridge script generation', () => {
     expect(stderr).toBe('');
     expect(stdout).toContain('"protocolVersion"');
     expect(stdout).toContain('"name":"can_use_tool"');
-    expect(stdout).toContain('"allow":true');
+    expect(stdout).toContain('"type":"text"');
+    expect(stdout).toContain('"text":"allow"');
     expect(requests.join('')).toContain('"method":"tools/call"');
     expect(requests.join('')).toContain('"session_id":"sess-fwd"');
   }, 10000);

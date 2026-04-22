@@ -77,6 +77,16 @@ export class SessionRegistry {
     return s;
   }
 
+  private _isPidAlive(pid: number | null): boolean {
+    if (pid == null) return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private _guardLifecycle(s: Session): void {
     if (s.lifecycleStatus === 'archived') throw new Error('SESSION_ARCHIVED');
   }
@@ -139,6 +149,53 @@ export class SessionRegistry {
         return 'ready';
       default:
         return 'cold';
+    }
+  }
+
+  reconcileProcessLiveness(name?: string): void {
+    const sessions = name ? [this._getOrThrow(name)] : this.list();
+    for (const s of sessions) {
+      if (s.status === 'attached' && !this._isPidAlive(s.attachedPid)) {
+        const from = s.status;
+        s.attachedPid = null;
+        s.status = 'idle';
+        this._syncIdleRuntimeState(s);
+        s.revision += 1;
+        s.lastActivityAt = new Date();
+        debugLog({ event: 'reconcile_attached_dead_pid', sessionName: s.name, from, to: s.status, revision: s.revision });
+        continue;
+      }
+
+      if (s.status === 'attach_pending' && !this._isPidAlive(s.attachedPid)) {
+        const from = s.status;
+        s.attachedPid = null;
+        if (s.runtimeState === 'running' && s.imWorkerPid != null) {
+          s.status = 'im_processing';
+          s.runtimeState = 'running';
+        } else if (s.runtimeState === 'waiting_approval' && s.imWorkerPid != null) {
+          s.status = 'approval_pending';
+          s.runtimeState = 'waiting_approval';
+        } else {
+          s.status = 'idle';
+          this._syncIdleRuntimeState(s);
+        }
+        s.revision += 1;
+        s.lastActivityAt = new Date();
+        debugLog({ event: 'reconcile_attach_pending_dead_pid', sessionName: s.name, from, to: s.status, runtimeState: s.runtimeState, revision: s.revision });
+        continue;
+      }
+
+      if (s.status === 'takeover_pending' && !this._isPidAlive(s.attachedPid)) {
+        const from = s.status;
+        s.attachedPid = null;
+        s.status = 'idle';
+        this._syncIdleRuntimeState(s);
+        delete s.takeoverRequestedBy;
+        delete s.takeoverRequestedAt;
+        s.revision += 1;
+        s.lastActivityAt = new Date();
+        debugLog({ event: 'reconcile_takeover_pending_dead_pid', sessionName: s.name, from, to: s.status, revision: s.revision });
+      }
     }
   }
 

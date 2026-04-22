@@ -6,7 +6,6 @@ import { MockCLIPlugin } from '../helpers/mock-cli-plugin.js';
 import { IMWorkerManager } from '../../src/im-worker-manager.js';
 import { IMMessageDispatcher } from '../../src/im-message-dispatcher.js';
 import { ApprovalHandler } from '../../src/approval-handler.js';
-import { generateBridgeScript } from '../../src/mcp-bridge.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -94,7 +93,6 @@ describe('Daemon CRUD commands', () => {
     expect(res.error!.code).toBe('SESSION_ALREADY_EXISTS');
   });
 
-
   test('remove channel 绑定 session 时仅做本地解绑/删除，不做远端硬删除前提下可成功完成', async () => {
     await client.send('create', { name: 'remove-channel', workdir: '/tmp', cli: 'claude-code' });
     daemon.registry.bindIM('remove-channel', {
@@ -125,6 +123,23 @@ describe('Daemon CRUD commands', () => {
     expect(session.imBindings[0].bindingKind).toBe('channel');
     expect(session.imBindings[0].channelId).toBe('channel-99');
   });
+
+  test('list/status 会自动清理 attached 死 pid，避免残留 attached', async () => {
+    await client.send('create', { name: 'stale-attached', workdir: '/tmp', cli: 'claude-code' });
+    await client.send('attach', { name: 'stale-attached', pid: 9999 });
+    const session = daemon.registry.get('stale-attached')!;
+    session.attachedPid = 99999999;
+
+    const listRes = await client.send('list', {});
+    expect(listRes.ok).toBe(true);
+    expect(daemon.registry.get('stale-attached')?.status).toBe('idle');
+    expect(daemon.registry.get('stale-attached')?.attachedPid).toBeNull();
+
+    const statusRes = await client.send('status', {});
+    expect(statusRes.ok).toBe(true);
+    const listed = (statusRes.data!.sessions as any[]).find((s: any) => s.name === 'stale-attached');
+    expect(listed.status).toBe('idle');
+  });
 });
 
 describe('ACL enforcement', () => {
@@ -137,7 +152,6 @@ describe('ACL enforcement', () => {
     expect(res.ok).toBe(false);
     expect(res.error!.code).toBe('ACL_DENIED');
 
-    // 零副作用：session 状态未变
     const listRes = await client.send('list', {});
     const s = (listRes.data!.sessions as any[]).find((s: any) => s.name === 'acl-test');
     expect(s.status).toBe('idle');
@@ -155,8 +169,6 @@ describe('ACL enforcement', () => {
     const listRes = await client.send('list', {});
     expect((listRes.data!.sessions as any[]).some((s: any) => s.name === 'acl-test2')).toBe(true);
   });
-
-
 
   test('IM 审批命令有 approver 角色时可批准并更新审批状态', async () => {
     await client.send('create', { name: 'approval-allow', workdir: '/tmp', cli: 'claude-code' }, {
@@ -192,6 +204,9 @@ describe('ACL enforcement', () => {
 
   test('IM reaction 审批可按 interaction message 决策', async () => {
     const mockIM = new MockIMPlugin();
+    const originalImPlugin = (daemon as any)._imPlugin;
+    const originalImPluginName = (daemon as any)._imPluginName;
+    const originalImPlugins = new Map((daemon as any)._imPlugins);
     (daemon as any)._imPlugin = mockIM;
     (daemon as any)._imPluginName = 'mattermost';
     (daemon as any)._imPlugins.set('mattermost', mockIM);
@@ -228,8 +243,106 @@ describe('ACL enforcement', () => {
     const state = (daemon as any)._approvalManager.getApprovalState(created.requestId);
     expect(state?.decision).toBe('approved');
     expect(state?.scope).toBe('session');
+
+    (daemon as any)._imPlugin = originalImPlugin;
+    (daemon as any)._imPluginName = originalImPluginName;
+    (daemon as any)._imPlugins = originalImPlugins;
   });
 
+  test('IM 创建/命中会话时会为发起者初始化 owner role，审批 fallback 不再被 ACL 拒绝', async () => {
+    const mockIM = new MockIMPlugin();
+    const originalImPlugin = (daemon as any)._imPlugin;
+    const originalImPluginName = (daemon as any)._imPluginName;
+    const originalImPlugins = new Map((daemon as any)._imPlugins);
+    (daemon as any)._imPlugin = mockIM;
+    (daemon as any)._imPluginName = 'mattermost';
+    (daemon as any)._imPlugins.set('mattermost', mockIM);
+
+    await (daemon as any)._handleIncomingIMMessage({
+      plugin: 'mattermost',
+      channelId: 'ch1',
+      threadId: 'thread-acl-init',
+      isTopLevel: false,
+      userId: 'im-owner',
+      text: 'hello',
+      messageId: 'im-owner-msg',
+      createdAt: new Date().toISOString(),
+      dedupeKey: 'im-owner-msg',
+    }, 'ch1');
+
+    const session = daemon.registry.list().find((s: any) => s.imBindings.some((b: any) => b.threadId === 'thread-acl-init'))!;
+    expect((daemon as any)._acl.hasRole(session.sessionId, 'im-owner', 'owner')).toBe(true);
+
+    const created = await (daemon as any)._approvalManager.createPendingApproval({
+      sessionId: session.sessionId,
+      messageId: 'msg-acl-init',
+      toolUseId: 'tool-acl-init',
+      capability: 'file_write',
+      operatorId: 'im-owner',
+      correlationId: 'corr-acl-init',
+    });
+
+    await (daemon as any)._handleApprovalDecision({
+      plugin: 'mattermost',
+      channelId: 'ch1',
+      threadId: 'thread-acl-init',
+      isTopLevel: false,
+      userId: 'im-owner',
+      text: '/approve once',
+      messageId: 'im-approve-last',
+      createdAt: new Date().toISOString(),
+      dedupeKey: 'im-approve-last',
+    }, 'ch1', 'approved');
+
+    const state = (daemon as any)._approvalManager.getApprovalState(created.requestId);
+    expect(state?.decision).toBe('approved');
+
+    (daemon as any)._imPlugin = originalImPlugin;
+    (daemon as any)._imPluginName = originalImPluginName;
+    (daemon as any)._imPlugins = originalImPlugins;
+  });
+
+  test('IM session approval 使用 /approve session 并命中 session scope 语义', async () => {
+    const session = daemon.registry.create('approval-session-scope', { workdir: '/tmp', cliPlugin: 'claude-code' });
+    daemon.registry.bindIM('approval-session-scope', {
+      plugin: 'mattermost',
+      bindingKind: 'thread',
+      threadId: 'thread-session-scope',
+      channelId: 'ch1',
+    } as any);
+    session.activeOperatorId = 'im-owner';
+    (daemon as any)._ensureIMActorRoles(session, 'im-owner');
+
+    const created = await (daemon as any)._approvalManager.createPendingApproval({
+      sessionId: session.sessionId,
+      messageId: 'msg-scope',
+      toolUseId: 'tool-scope',
+      capability: 'file_write',
+      operatorId: 'im-owner',
+      correlationId: 'corr-scope',
+    });
+
+    await (daemon as any)._handleApprovalDecision({
+      plugin: 'mattermost',
+      channelId: 'ch1',
+      threadId: 'thread-session-scope',
+      isTopLevel: false,
+      userId: 'im-owner',
+      text: '/approve session',
+      messageId: 'im-approve-session',
+      createdAt: new Date().toISOString(),
+      dedupeKey: 'im-approve-session',
+    }, 'ch1', 'approved');
+
+    const result = await (daemon as any)._approvalManager.applyRules(
+      'Bash',
+      { command: 'sed -i s/a/b file' },
+      'file_write',
+      { sessionId: session.sessionId, operatorId: session.activeOperatorId },
+    );
+    expect(created.requestId).toBeDefined();
+    expect(result).toBe('allow');
+  });
 });
 
 describe('takeover commands', () => {
@@ -295,7 +408,11 @@ describe('daemon IM approval chain', () => {
       '  const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });',
       '  rl.on("line", async () => {',
       '    const response = await rpc("tools/call", { name: "can_use_tool", arguments: { tool_name: "Edit", tool_input: { path: "/tmp/a.txt" }, capability: "file_write", message_id: "msg-daemon-1", tool_use_id: "tool-daemon-1" } });',
-      '    if (response.result && response.result.allow) {',
+      '    const content = response.result && Array.isArray(response.result.content) ? response.result.content : [];',
+      '    const text = content.find((block) => block && block.type === "text")?.text || "";',
+      '    const parsed = (() => { try { return JSON.parse(text); } catch { return null; } })();',
+      '    const allow = parsed && parsed.behavior === "allow";',
+      '    if (allow) {',
       '      process.stdout.write(JSON.stringify({ type: "assistant", payload: { message: { content: [{ type: "text", text: "daemon step 1" }] } } }) + "\\n");',
       '      process.stdout.write(JSON.stringify({ type: "assistant", payload: { message: { content: [{ type: "text", text: "daemon step 2" }] } } }) + "\\n");',
       '      process.stdout.write(JSON.stringify({ type: "result", payload: { subtype: "success", result: "done" } }) + "\\n");',
@@ -351,6 +468,7 @@ describe('daemon IM approval chain', () => {
       await vi.waitFor(() => {
         expect(mockIM.approvalRequests).toHaveLength(1);
       }, { timeout: 3000 });
+      expect(mockIM.reactionAdds.at(-1)?.emojis).toEqual(['👍', '✅', '👎', '⏹️']);
 
       const session = daemon.registry.list()[0]!;
       (daemon as any)._acl.grantRole(session.sessionId, 'approver-user', 'approver');

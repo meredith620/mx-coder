@@ -83,6 +83,7 @@ describe('审批链路集成', () => {
     expect(req.riskLevel).toBe('medium');
     expect(mockIM.approvalInteractions).toHaveLength(1);
     expect(mockIM.approvalInteractions[0]?.requestId).toBe(req.requestId);
+    expect(mockIM.reactionAdds.at(-1)?.emojis).toEqual(['👍', '✅', '👎', '⏹️']);
 
     const state = approvalMgr.getAllApprovalStates()[0];
     expect(state).toBeDefined();
@@ -94,7 +95,10 @@ describe('审批链路集成', () => {
 
     const parsed = JSON.parse(response.trim());
     expect(parsed.id).toBe(1);
-    expect(parsed.result?.allow).toBe(true);
+    expect(parsed.result?.content?.[0]?.type).toBe('text');
+    const payload = JSON.parse(parsed.result?.content?.[0]?.text ?? '{}');
+    expect(payload.behavior).toBe('allow');
+    expect(payload.updatedInput?.path).toBe('/tmp/a.txt');
   }, 15000);
 
   test('shell_dangerous 工具直接返回 deny，不发送审批消息', async () => {
@@ -132,39 +136,40 @@ describe('审批链路集成', () => {
 
     const parsed = JSON.parse(response.trim());
     expect(parsed.id).toBe(2);
-    expect(parsed.result?.allow).toBe(false);
+    const payload = JSON.parse(parsed.result?.content?.[0]?.text ?? '{}');
+    expect(payload.behavior).toBe('deny');
+    expect(payload.message).toBe('Denied by policy');
     expect(mockIM.approvalRequests).toHaveLength(0);
   });
 
-  test('handler 使用 resolveContext 决定审批回传目标与 sessionName', async () => {
+  test('同一 session + operator + capability 在 scope=session 后后续请求直接 autoAllow，不再发第二次审批', async () => {
     await handler.close();
     handler = new ApprovalHandler({
       socketPath,
       approvalManager: approvalMgr,
       imPlugin: mockIM,
-      imTarget: { plugin: 'mock', threadId: 'fallback-thread' },
+      imTarget: { plugin: 'mock', threadId: 'thread-1' },
       resolveContext: (sessionId: string) => ({
-        target: { plugin: 'mock', threadId: 'resolved-thread', channelId: 'resolved-channel' },
-        sessionName: `${sessionId}-name`,
+        target: { plugin: 'mock', threadId: 'thread-1' },
+        sessionName: sessionId,
+        operatorId: 'user-1',
       }),
     });
     await handler.listen();
 
-    const canUseToolRequest = JSON.stringify({
+    const request = (id: number) => JSON.stringify({
       jsonrpc: '2.0',
-      id: 4,
+      id,
       method: 'tools/call',
       params: {
         name: 'can_use_tool',
         arguments: {
           tool_name: 'Edit',
-          tool_input: { path: '/tmp/c.txt' },
-          session_id: 'sess-resolve',
-          message_id: 'msg-4',
-          tool_use_id: 'tool-4',
+          input: { path: '/tmp/a.txt' },
+          session_id: 'sess-cache',
+          message_id: `msg-${id}`,
+          tool_use_id: `tool-${id}`,
           capability: 'file_write',
-          operator_id: 'user-4',
-          correlation_id: 'corr-4',
         },
       },
     });
@@ -174,15 +179,26 @@ describe('审批链路集成', () => {
       s.on('connect', () => resolve(s));
       s.on('error', reject);
     });
-    workerSocket.write(canUseToolRequest + '\n');
 
+    let response = '';
+    workerSocket.on('data', chunk => { response += chunk.toString(); });
+    workerSocket.write(request(10) + '\n');
     await new Promise(resolve => setTimeout(resolve, 100));
 
-    expect(mockIM.approvalRequests.at(-1)?.sessionName).toBe('sess-resolve-name');
-    expect(mockIM.approvalTargets.at(-1)?.threadId).toBe('resolved-thread');
-    expect(mockIM.approvalTargets.at(-1)?.channelId).toBe('resolved-channel');
-    expect(approvalMgr.getApprovalState(mockIM.approvalRequests.at(-1)!.requestId)?.interactionMessageId)
-      .toBe(mockIM.approvalInteractions.at(-1)?.messageId);
+    const firstReq = mockIM.approvalRequests.at(-1);
+    expect(firstReq?.requestId).toBeDefined();
+    await approvalMgr.decide(firstReq!.requestId, { decision: 'approved', scope: 'session' });
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    const approvalCountBefore = mockIM.approvalRequests.length;
+    response = '';
+    workerSocket.write(request(11) + '\n');
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    expect(mockIM.approvalRequests).toHaveLength(approvalCountBefore);
+    const parsed = JSON.parse(response.trim());
+    const payload = JSON.parse(parsed.result?.content?.[0]?.text ?? '{}');
+    expect(payload.behavior).toBe('allow');
 
     workerSocket.destroy();
   });

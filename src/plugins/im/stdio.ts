@@ -85,6 +85,14 @@ export class StdioIMPlugin implements IMPlugin {
     this._write({ type: 'update', messageId, text: this._toText(content) });
   }
 
+  async addReactions(messageId: string, emojis: string[]): Promise<void> {
+    this._write({ type: 'reactions', messageId, emojis });
+  }
+
+  async listReactions(_messageId: string): Promise<Array<{ userId: string; emoji: string }>> {
+    return [];
+  }
+
   async requestApproval(target: MessageTarget, request: ApprovalRequest): Promise<string | undefined> {
     const messageId = `approval-${++this._liveCounter}`;
     this._write({

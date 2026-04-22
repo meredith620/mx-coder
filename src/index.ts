@@ -24,6 +24,74 @@ function printVersion() {
   console.log(`mm-coder ${VERSION} (${GIT_HASH})`);
 }
 
+async function waitForDaemonStop(pid: number, timeoutMs = 10_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return true;
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  return false;
+}
+
+function resolveDaemonEntry(): string {
+  const currentDir = path.dirname(fileURLToPath(import.meta.url));
+  const jsEntry = path.join(currentDir, 'daemon-main.js');
+  if (fs.existsSync(jsEntry)) {
+    return jsEntry;
+  }
+  return path.join(currentDir, 'daemon-main.ts');
+}
+
+function buildDaemonChildArgs(
+  socketPath: string,
+  pidFile: string,
+  persistencePath: string,
+  imConfigPath: string,
+  imPluginName: string,
+  logPath: string,
+): string[] {
+  return [
+    ...process.execArgv,
+    resolveDaemonEntry(),
+    socketPath,
+    pidFile,
+    persistencePath,
+    imConfigPath,
+    imPluginName,
+    logPath,
+  ];
+}
+
+async function waitForSocketRelease(socketPath: string, timeoutMs = 10_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!fs.existsSync(socketPath)) {
+      return true;
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  return !fs.existsSync(socketPath);
+}
+
+async function waitForPidFile(pidFile: string, timeoutMs = 10_000): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(pidFile)) {
+      const raw = fs.readFileSync(pidFile, 'utf-8').trim();
+      const pid = Number.parseInt(raw, 10);
+      if (Number.isFinite(pid) && pid > 0) {
+        return pid;
+      }
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  throw new Error(`Timed out waiting for pid file ${pidFile}`);
+}
+
 async function main() {
   const argv = process.argv.slice(2);
 
@@ -277,15 +345,14 @@ async function handleStart(args: Record<string, string | undefined>) {
 
   const imPluginName = args.plugin ?? getDefaultIMPluginName();
   const imConfigPath = args.config;
-  const childArgs = [
-    path.join(path.dirname(fileURLToPath(import.meta.url)), 'daemon-main.js'),
+  const childArgs = buildDaemonChildArgs(
     SOCKET_PATH,
     PID_FILE,
     PERSISTENCE_PATH,
     imConfigPath ?? '',
     imPluginName,
     LOG_PATH,
-  ];
+  );
 
   const child = spawn(process.execPath, childArgs, {
     detached: true,
@@ -293,7 +360,8 @@ async function handleStart(args: Record<string, string | undefined>) {
   });
 
   child.unref();
-  console.log(`Daemon started (PID ${child.pid})`);
+  const daemonPid = await waitForPidFile(PID_FILE);
+  console.log(`Daemon started (PID ${daemonPid})`);
   console.log(`Log file: ${LOG_PATH}`);
 }
 
@@ -302,15 +370,14 @@ async function handleStartForeground(argv: string[]) {
   const args = parsed.args;
   const imPluginName = args.plugin ?? getDefaultIMPluginName();
   const imConfigPath = args.config;
-  const childArgs = [
-    path.join(path.dirname(fileURLToPath(import.meta.url)), 'daemon-main.js'),
+  const childArgs = buildDaemonChildArgs(
     SOCKET_PATH,
     '',
     PERSISTENCE_PATH,
     imConfigPath ?? '',
     imPluginName,
     LOG_PATH,
-  ];
+  );
 
   console.log(`Starting daemon in foreground. Log file: ${LOG_PATH}`);
   const child = spawn(process.execPath, childArgs, {
@@ -323,25 +390,70 @@ async function handleStartForeground(argv: string[]) {
   });
 }
 
-async function handleStop() {
+async function handleStop(): Promise<{ wasRunning: boolean; stoppedPid?: number; alreadyStopped?: boolean }> {
   if (!fs.existsSync(PID_FILE)) {
     console.log('Daemon is not running');
-    return;
+    return { wasRunning: false, alreadyStopped: true };
   }
 
   const pid = parseInt(fs.readFileSync(PID_FILE, 'utf-8').trim(), 10);
+  console.log(`Stopping daemon (PID ${pid})...`);
   try {
     process.kill(pid, 'SIGTERM');
-    console.log(`Daemon stopped (PID ${pid})`);
-  } catch {
+    console.log('Waiting for graceful shutdown...');
+    const stopped = await waitForDaemonStop(pid);
+    if (!stopped) {
+      console.log(`Graceful shutdown timed out for PID ${pid}, sending SIGKILL...`);
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        // ignore if already gone
+      }
+      const killed = await waitForDaemonStop(pid, 2_000);
+      if (!killed) {
+        throw new Error(`Timed out waiting for daemon ${pid} to stop`);
+      }
+    }
+    console.log('Waiting for socket release...');
+    await waitForSocketRelease(SOCKET_PATH);
     try { fs.unlinkSync(PID_FILE); } catch { /* ignore */ }
-    console.log('Daemon was not running (stale PID file removed)');
+    console.log(`Daemon stopped (PID ${pid})`);
+    return { wasRunning: true, stoppedPid: pid };
+  } catch (err) {
+    try {
+      process.kill(pid, 0);
+      throw err;
+    } catch {
+      try { fs.unlinkSync(PID_FILE); } catch { /* ignore */ }
+      console.log('Daemon process already exited; waiting for socket release...');
+      await waitForSocketRelease(SOCKET_PATH);
+      console.log('Daemon was not running (stale PID file removed)');
+      return { wasRunning: false, stoppedPid: pid };
+    }
   }
 }
 
 async function handleRestart(args: Record<string, string | undefined>) {
-  await handleStop();
-  await new Promise(resolve => setTimeout(resolve, 500));
+  console.log('Restarting daemon...');
+  const stopResult = await handleStop();
+  if (!stopResult.wasRunning) {
+    console.log('Starting daemon...');
+    await handleStart(args);
+    return;
+  }
+  if (stopResult.stoppedPid !== undefined) {
+    console.log(`Verifying daemon ${stopResult.stoppedPid} has exited...`);
+    const fullyStopped = await waitForDaemonStop(stopResult.stoppedPid);
+    if (!fullyStopped) {
+      throw new Error(`Daemon ${stopResult.stoppedPid} failed to stop cleanly`);
+    }
+  }
+  console.log('Verifying socket release...');
+  const socketReleased = await waitForSocketRelease(SOCKET_PATH);
+  if (!socketReleased) {
+    throw new Error(`Socket ${SOCKET_PATH} was not released after stop`);
+  }
+  console.log('Starting daemon...');
   await handleStart(args);
 }
 

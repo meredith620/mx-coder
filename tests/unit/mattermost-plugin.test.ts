@@ -283,6 +283,37 @@ describe('MattermostPlugin', () => {
     expect(received).toEqual(['hello from ws']);
   });
 
+  test('onMessage 能接收 websocket reaction 事件', async () => {
+    const plugin = new MattermostPlugin({ url: BASE_URL, token: TOKEN, channelId: CHANNEL_ID });
+
+    fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 'bot-u1', username: 'bot' }),
+      text: async () => '',
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const received: Array<{ emoji?: string; postId?: string }> = [];
+    plugin.onMessage((msg) => received.push({ emoji: msg.reaction?.emoji, postId: msg.reaction?.postId }));
+    await plugin.connect();
+
+    wsInstances[0].__emit('message', {
+      data: JSON.stringify({
+        event: 'reaction_added',
+        data: {},
+        broadcast: {
+          channel_id: CHANNEL_ID,
+          post_id: 'post-approval-1',
+          user_id: 'user-x',
+          emoji_name: '+1',
+        },
+      }),
+    });
+
+    expect(received).toEqual([{ emoji: '👍', postId: 'post-approval-1' }]);
+  });
+
   test('sendMessage 使用 target.channelId，且空 threadId 不发送 root_id', async () => {
     const plugin = new MattermostPlugin({ url: BASE_URL, token: TOKEN, channelId: CHANNEL_ID });
     await plugin.sendMessage({ plugin: 'mattermost', channelId: 'ch-other', threadId: '' }, { kind: 'text', text: 'hello' });
@@ -464,8 +495,24 @@ describe('MattermostPlugin', () => {
     expect(body.channel_id).toBe('ch-typing');
     expect(body.parent_id).toBe('root1');
   });
-  test('requestApproval 发送带 attachments 的消息', async () => {
+  test('requestApproval 发送带 attachments 的消息并预置 reaction', async () => {
     const plugin = new MattermostPlugin({ url: BASE_URL, token: TOKEN, channelId: CHANNEL_ID });
+    fetchSpy = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        json: async () => ({ id: 'approval-post-1' }),
+        text: async () => '',
+      })
+      .mockResolvedValue({
+        ok: true,
+        status: 201,
+        json: async () => ({}),
+        text: async () => '',
+      });
+    vi.stubGlobal('fetch', fetchSpy);
+    (plugin as any)._botUserId = 'bot-u1';
+
     await plugin.requestApproval({ plugin: 'mattermost', threadId: 'root1' }, {
       requestId: 'req1',
       sessionName: 'sess1',
@@ -478,11 +525,44 @@ describe('MattermostPlugin', () => {
       timeoutSeconds: 60,
     } as any);
 
-    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(fetchSpy).toHaveBeenCalledTimes(5);
     const [url, opts] = fetchSpy.mock.calls[0];
     expect(url).toBe(`${BASE_URL}/api/v4/posts`);
     const body = JSON.parse(opts.body);
     expect(body.props?.attachments).toBeDefined();
+    expect(fetchSpy.mock.calls.slice(1).every(call => call[0] === `${BASE_URL}/api/v4/reactions`)).toBe(true);
+  });
+
+  test('listReactions 返回标准化后的 emoji 列表', async () => {
+    const plugin = new MattermostPlugin({ url: BASE_URL, token: TOKEN, channelId: CHANNEL_ID });
+    fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ([{ user_id: 'user-x', emoji_name: '+1' }]),
+      text: async () => '',
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const reactions = await plugin.listReactions('approval-post-1');
+    expect(reactions).toEqual([{ userId: 'user-x', emoji: '👍' }]);
+  });
+
+  test('listReactions 会过滤 bot 自己预置的 reaction', async () => {
+    const plugin = new MattermostPlugin({ url: BASE_URL, token: TOKEN, channelId: CHANNEL_ID });
+    fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ([
+        { user_id: 'bot-u1', emoji_name: '+1' },
+        { user_id: 'user-x', emoji_name: '-1' },
+      ]),
+      text: async () => '',
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    (plugin as any)._botUserId = 'bot-u1';
+
+    const reactions = await plugin.listReactions('approval-post-2');
+    expect(reactions).toEqual([{ userId: 'user-x', emoji: '👎' }]);
   });
 
   test('getConnectionHealth 返回 ws/subscription 健康摘要', async () => {

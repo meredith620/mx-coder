@@ -4,12 +4,24 @@ import type { ApprovalManager } from './approval-manager.js';
 import type { IMPlugin } from './plugins/types.js';
 import type { MessageTarget, Capability } from './types.js';
 
+interface PermissionResultPayload {
+  behavior: 'allow' | 'deny';
+  updatedInput?: Record<string, unknown>;
+  message?: string;
+}
+
+function encodePermissionResult(result: PermissionResultPayload): { content: Array<{ type: 'text'; text: string }> } {
+  return {
+    content: [{ type: 'text', text: JSON.stringify(result) }],
+  };
+}
+
 export interface ApprovalHandlerOptions {
   socketPath: string;
   approvalManager: ApprovalManager;
   imPlugin: IMPlugin;
   imTarget: MessageTarget;
-  resolveContext?: (sessionId: string) => { target: MessageTarget; sessionName: string } | undefined;
+  resolveContext?: (sessionId: string) => { target: MessageTarget; sessionName: string; operatorId?: string; message?: { approvalState?: 'pending' | 'approved' | 'denied' | 'expired' | 'cancelled'; approvalScope?: 'once' | 'session' } } | undefined;
 }
 
 interface JsonRPCRequest {
@@ -20,6 +32,23 @@ interface JsonRPCRequest {
     name?: string;
     arguments?: Record<string, unknown>;
   };
+}
+
+function deriveCapability(toolName: string, toolInput: Record<string, unknown>): Capability | undefined {
+  if (toolName === 'Read' || toolName === 'Glob' || toolName === 'Grep' || toolName === 'WebSearch' || toolName === 'WebFetch') {
+    return 'read_only';
+  }
+  if (toolName === 'Edit' || toolName === 'Write' || toolName === 'NotebookEdit') {
+    return 'file_write';
+  }
+  if (toolName === 'Bash') {
+    const command = typeof toolInput.command === 'string' ? toolInput.command : '';
+    if (/\b(rm\s+-rf|mkfs|dd\s+if=|shutdown|reboot|poweroff|iptables|systemctl\s+stop|killall|kill\s+-9)\b/.test(command)) {
+      return 'shell_dangerous';
+    }
+    return 'file_write';
+  }
+  return undefined;
 }
 
 function toRiskLevel(capability?: Capability): 'low' | 'medium' | 'high' {
@@ -85,28 +114,54 @@ export class ApprovalHandler {
       if (req.method === 'tools/call' && req.params?.name === 'can_use_tool') {
         const toolArgs = req.params.arguments ?? {};
         const toolName = toolArgs['tool_name'] as string ?? '';
-        const toolInput = toolArgs['tool_input'] as Record<string, unknown> ?? {};
+        const toolInput = (toolArgs['input'] as Record<string, unknown> | undefined)
+          ?? (toolArgs['tool_input'] as Record<string, unknown> | undefined)
+          ?? {};
         const sessionId = toolArgs['session_id'] as string ?? '';
         const messageId = toolArgs['message_id'] as string ?? '';
         const toolUseId = toolArgs['tool_use_id'] as string ?? '';
-        const capability = toolArgs['capability'] as Capability | undefined;
+        const rawCapability = toolArgs['capability'] as Capability | undefined;
+        const capability = rawCapability ?? deriveCapability(toolName, toolInput);
         const operatorId = toolArgs['operator_id'] as string | undefined;
         const correlationId = toolArgs['correlation_id'] as string | undefined;
 
-        const ruleResult = await this._opts.approvalManager.applyRules(
+        const resolvedContext = this._opts.resolveContext?.(sessionId);
+        const target = resolvedContext?.target ?? this._opts.imTarget;
+        const sessionName = resolvedContext?.sessionName ?? sessionId;
+        const effectiveOperatorId = operatorId ?? resolvedContext?.operatorId;
+        const previousApproval = resolvedContext?.message?.approvalState;
+        const previousScope = resolvedContext?.message?.approvalScope;
+
+        const ruleResult = previousApproval === 'approved' && previousScope === 'session'
+          ? 'allow'
+          : await this._opts.approvalManager.applyRules(
+              toolName,
+              toolInput,
+              capability,
+              sessionId && effectiveOperatorId ? { sessionId, operatorId: effectiveOperatorId } : undefined,
+            );
+
+        console.log(JSON.stringify({
+          at: new Date().toISOString(),
+          component: 'approval-handler',
+          event: 'permission_resolution',
+          sessionId,
           toolName,
-          toolInput,
           capability,
-          sessionId && operatorId ? { sessionId, operatorId } : undefined,
-        );
+          rawCapability,
+          effectiveOperatorId,
+          previousApproval,
+          previousScope,
+          ruleResult,
+        }));
 
         if (ruleResult === 'allow') {
-          socket.write(JSON.stringify({ jsonrpc: '2.0', id: req.id, result: { allow: true } }) + '\n');
+          socket.write(JSON.stringify({ jsonrpc: '2.0', id: req.id, result: encodePermissionResult({ behavior: 'allow', updatedInput: toolInput }) }) + '\n');
           continue;
         }
 
         if (ruleResult === 'deny') {
-          socket.write(JSON.stringify({ jsonrpc: '2.0', id: req.id, result: { allow: false } }) + '\n');
+          socket.write(JSON.stringify({ jsonrpc: '2.0', id: req.id, result: encodePermissionResult({ behavior: 'deny', message: 'Denied by policy' }) }) + '\n');
           continue;
         }
 
@@ -117,12 +172,9 @@ export class ApprovalHandler {
           toolUseId,
           ...(correlationId ? { correlationId } : {}),
           ...(capability ? { capability } : {}),
-          ...(operatorId ? { operatorId } : {}),
+          ...(effectiveOperatorId ? { operatorId: effectiveOperatorId } : {}),
         });
 
-        const resolvedContext = this._opts.resolveContext?.(sessionId);
-        const target = resolvedContext?.target ?? this._opts.imTarget;
-        const sessionName = resolvedContext?.sessionName ?? sessionId;
 
         const interactionMessageId = await this._opts.imPlugin.requestApproval(target, {
           requestId: created.requestId,
@@ -141,7 +193,15 @@ export class ApprovalHandler {
 
         // Poll for decision (with timeout handled by ApprovalManager)
         const result = await this._waitForDecision(created.requestId);
-        socket.write(JSON.stringify({ jsonrpc: '2.0', id: req.id, result: { allow: result === 'approved' } }) + '\n');
+        socket.write(JSON.stringify({
+          jsonrpc: '2.0',
+          id: req.id,
+          result: encodePermissionResult(
+            result === 'approved'
+              ? { behavior: 'allow', updatedInput: toolInput }
+              : { behavior: 'deny', message: result === 'cancelled' ? 'Cancelled by user' : result === 'expired' ? 'Approval timeout' : 'Denied by user' },
+          ),
+        }) + '\n');
       }
     }
   }

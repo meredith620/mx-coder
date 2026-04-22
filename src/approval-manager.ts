@@ -43,6 +43,7 @@ export interface ApprovalState {
   capability?: Capability;
   cancelReason?: string;
   interactionMessageId?: string;
+  lastReactionPollAt?: number;
   context: CreatedApproval['context'];
   // CAS lock: once decision is set away from 'pending', no further changes
   _decided: boolean;
@@ -252,6 +253,12 @@ export class ApprovalManager {
     const state = this._states.get(requestId);
     if (!state) return;
     state.interactionMessageId = interactionMessageId;
+  }
+
+  markReactionPoll(requestId: string): void {
+    const state = this._states.get(requestId);
+    if (!state) return;
+    state.lastReactionPollAt = Date.now();
   }
 
   getApprovalStateByInteractionMessageId(interactionMessageId: string): ApprovalState | undefined {

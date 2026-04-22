@@ -4,7 +4,7 @@ import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 import * as readline from 'readline';
-import { encodeRequest, encodeResponse, decodeMessage } from './ipc/codec.js';
+import { encodeRequest, encodeResponse, decodeMessage, encodePing } from './ipc/codec.js';
 
 export interface AttachOptions {
   socketPath: string;
@@ -40,6 +40,15 @@ export async function attachSession(opts: AttachOptions): Promise<void> {
   const rl = readline.createInterface({ input: socket, crlfDelay: Infinity });
   const pending = new Map<string, (line: string) => void>();
   let resumeResolve: (() => void) | null = null;
+  const pingTimer = setInterval(() => {
+    try {
+      if (!socket.destroyed) {
+        socket.write(encodePing() + '\n');
+      }
+    } catch {
+      // ignore ping failure; normal request path will surface hard failures
+    }
+  }, 15_000);
 
   rl.on('line', (line) => {
     if (!line.trim()) return;
@@ -63,6 +72,10 @@ export async function attachSession(opts: AttachOptions): Promise<void> {
 
   function sendRequest(command: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
     return new Promise((resolve, reject) => {
+      if (socket.destroyed) {
+        reject(new Error('SOCKET_CLOSED'));
+        return;
+      }
       const line = encodeRequest(command, args);
       const requestId = (JSON.parse(line) as { requestId: string }).requestId;
       pending.set(requestId, (responseLine) => {
@@ -105,7 +118,12 @@ export async function attachSession(opts: AttachOptions): Promise<void> {
       exitReason: exitCode === 0 ? 'normal' : 'error',
       exitCode,
     });
+    appendAttachLog({ event: 'mark_detached_ack', sessionName, exitCode });
+  } catch (error) {
+    appendAttachLog({ event: 'attach_error', sessionName, error: (error as Error).message });
+    throw error;
   } finally {
+    clearInterval(pingTimer);
     rl.close();
     socket.destroy();
   }

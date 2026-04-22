@@ -108,13 +108,25 @@ mm-coder 里有三类事件，不能混为一谈：
   - 👎 = `No`
   - ⏹️ = `Cancel`
 - `Cancel` 的语义不是 deny，而是终止当前审批等待，让当前请求走 cancelled / expired 路径。
-- 文本命令仅作为 fallback，且应面向“当前 thread 最近一个 pending approval”，例如：
+- 文本命令仅作为 fallback，主语法应面向“当前 thread 最近一个 pending approval”，例如：
+  - `/approve once`
+  - `/approve session`
+  - `/deny`
+  - `/cancel`
+- 兼容旧写法：
   - `/approve last once`
   - `/approve last session`
   - `/deny last`
   - `/cancel last`
 - 不应要求用户复制粘贴完整 `requestId`；那是内部关联键，不应成为主交互对象。
 - 审批消息在决策后应回写最终结果，形成稳定审计闭环，而不是留下可重复执行的静态命令模板。
+- `--permission-prompt-tool` 的 MCP 响应必须返回单个 text block，且 `text` 是 JSON 字符串；allow 使用 `{"behavior":"allow","updatedInput":...}`，deny 使用 `{"behavior":"deny","message":"..."}`。
+- permission prompt tool 输入字段以 `input` 为主，兼容旧实现中的 `tool_input`；内部应统一为同一真值再进入审批链路。
+- session 级授权仍按 `sessionId + operatorId + capability` 缓存；`operatorId` 的真值来源应为 daemon 当前活动消息上下文，`capability` 优先使用 MCP 透传值，缺失时由 daemon 依据 `toolName + input` 做保守推导兜底。
+- reaction 审批事件源应采用“WS 优先 + REST fallback”双轨：若 approval post 已有 reaction 落库但 daemon 未收到 `reaction_added/reaction_removed`，应通过 `/posts/{id}/reactions` 轮询补收口。
+- REST fallback 必须过滤 bot 自己为审批消息预置的 reaction，审批真值只能来自非 bot 用户。
+- 审批消息发出后应由 bot 自动预置 👍 / ✅ / 👎 / ⏹️，让用户直接点击而不是自行搜索 emoji。
+- stop/restart 属于长路径控制操作，CLI 应持续输出阶段进度，避免用户把“正在优雅关闭/等待 socket 释放”误判为卡死。
 
 ---
 

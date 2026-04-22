@@ -51,6 +51,7 @@ export interface QueuedMessage {
   restoreAction?: 'replay' | 'discard' | 'confirm';
   replayOf?: string;
   approvalState?: 'pending' | 'approved' | 'denied' | 'expired' | 'cancelled';
+  approvalScope?: 'once' | 'session';
 }
 
 export interface Session {
@@ -63,6 +64,7 @@ export interface Session {
   lifecycleStatus: LifecycleStatus;
   initState: InitState;
   runtimeState: RuntimeState;
+  activeOperatorId?: string;
   takeoverRequestedBy?: string;
   takeoverRequestedAt?: string;
   needsRecovery?: boolean;

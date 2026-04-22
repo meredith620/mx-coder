@@ -322,6 +322,7 @@ export class IMMessageDispatcher {
     });
 
     try {
+      session.activeOperatorId = message.userId;
       this._markMessageStatus(sessionName, message.messageId, 'running');
       await this._opts.workerManager.ensureRunning(sessionName);
       if (previousCursor) {
@@ -357,6 +358,10 @@ export class IMMessageDispatcher {
       }
       try {
         this._opts.registry.markImDone(sessionName);
+        const currentSession = this._opts.registry.get(sessionName);
+        if (currentSession && currentSession.messageQueue.every(m => m.status !== 'running' && m.status !== 'waiting_approval')) {
+          delete currentSession.activeOperatorId;
+        }
         debugLog({ event: 'mark_im_done', sessionName, messageId: message.messageId, sessionStatus: this._opts.registry.get(sessionName)?.status });
         this._opts.onSessionImDone?.(sessionName);
       } catch (err) {

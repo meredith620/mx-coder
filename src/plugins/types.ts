@@ -53,6 +53,16 @@ export interface IMPlugin {
   requestApproval(target: MessageTarget, request: ApprovalRequest): Promise<string | undefined>;
 
   /**
+   * Add candidate reactions to an existing message when the platform supports it.
+   */
+  addReactions?(messageId: string, emojis: string[]): Promise<void>;
+
+  /**
+   * Read reactions for an existing message when the platform supports it.
+   */
+  listReactions?(messageId: string): Promise<Array<{ userId: string; emoji: string }>>;
+
+  /**
    * Send a typing indicator when the IM platform supports it
    */
   sendTyping?(target: MessageTarget): Promise<void>;

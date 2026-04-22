@@ -30,6 +30,11 @@ interface ApprovalInteractionRecord {
   messageId: string;
 }
 
+interface ReactionRecord {
+  messageId: string;
+  emojis: string[];
+}
+
 export class MockIMPlugin implements IMPlugin {
   private _handlers: Array<(msg: IncomingMessage) => void> = [];
   sent: SentRecord[] = [];
@@ -39,6 +44,7 @@ export class MockIMPlugin implements IMPlugin {
   approvalTargets: MessageTarget[] = [];
   approvalDecisions: ApprovalDecisionRecord[] = [];
   approvalInteractions: ApprovalInteractionRecord[] = [];
+  reactionAdds: ReactionRecord[] = [];
   typingCalls: TypingRecord[] = [];
   createdConversations: CreatedConversationRecord[] = [];
   failCreateLiveMessage = false;
@@ -94,11 +100,24 @@ export class MockIMPlugin implements IMPlugin {
     this.liveMessages.set(messageId, text);
   }
 
+  async addReactions(messageId: string, emojis: string[]): Promise<void> {
+    this.reactionAdds.push({ messageId, emojis });
+  }
+
+  async listReactions(messageId: string): Promise<Array<{ userId: string; emoji: string }>> {
+    const match = this.approvalInteractions.find((item) => item.messageId === messageId);
+    if (!match) return [];
+    const decision = this.approvalDecisions.find((item) => item.requestId === match.requestId && item.decision === 'approved');
+    if (!decision) return [];
+    return [{ userId: 'mock-user', emoji: decision.scope === 'session' ? '✅' : '👍' }];
+  }
+
   async requestApproval(target: MessageTarget, request: ApprovalRequest): Promise<string | undefined> {
     this.approvalTargets.push(target);
     this.approvalRequests.push(request);
     const messageId = uuidv4();
     this.approvalInteractions.push({ requestId: request.requestId, messageId });
+    await this.addReactions(messageId, ['👍', '✅', '👎', '⏹️']);
     return messageId;
   }
 

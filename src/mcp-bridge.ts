@@ -96,6 +96,7 @@ rl.on('line', line => {
             type: 'object',
             properties: {
               tool_name: { type: 'string' },
+              input: { type: 'object' },
               tool_input: { type: 'object' },
               message_id: { type: 'string' },
               tool_use_id: { type: 'string' },
@@ -103,7 +104,7 @@ rl.on('line', line => {
               operator_id: { type: 'string' },
               correlation_id: { type: 'string' },
             },
-            required: ['tool_name', 'tool_input'],
+            required: ['tool_name'],
           },
         }],
       },
