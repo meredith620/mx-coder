@@ -48,14 +48,19 @@ if (logPath) {
   process.on('exit', () => logStream.end());
 }
 
+const resolvedImConfigPath = imConfigPath && imConfigPath.trim() !== ''
+  ? imConfigPath
+  : path.join(os.homedir(), '.mx-coder', 'config.json');
+const resolvedImPluginConfig = fs.existsSync(resolvedImConfigPath)
+  ? loadMattermostConfig(resolvedImConfigPath) as unknown as Record<string, unknown>
+  : undefined;
+
 const daemon = new Daemon(socketPath, {
   persistencePath,
-  ...(imConfigPath ? { imConfigPath } : {}),
+  ...(resolvedImConfigPath ? { imConfigPath: resolvedImConfigPath } : {}),
   enableIM: true,
   imPluginName,
-  ...(imConfigPath
-    ? { imPluginConfig: loadMattermostConfig(imConfigPath) as unknown as Record<string, unknown> }
-    : {}),
+  ...(resolvedImPluginConfig ? { imPluginConfig: resolvedImPluginConfig } : {}),
 });
 
 if (pidFile) {

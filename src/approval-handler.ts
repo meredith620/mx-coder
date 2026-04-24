@@ -1,4 +1,5 @@
 import * as net from 'net';
+import * as fs from 'fs';
 import * as readline from 'readline';
 import type { ApprovalManager } from './approval-manager.js';
 import type { IMPlugin } from './plugins/types.js';
@@ -78,6 +79,13 @@ export class ApprovalHandler {
   }
 
   async listen(): Promise<net.Server> {
+    // Clean up stale socket file before binding
+    try {
+      fs.unlinkSync(this._opts.socketPath);
+    } catch {
+      // ignore if file doesn't exist
+    }
+
     this._server = net.createServer(socket => {
       void this._handleConnection(socket);
     });

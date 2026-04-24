@@ -123,13 +123,14 @@ describe('mx-coder CLI E2E', () => {
   test('completion bash 输出静态补全脚本', async () => {
     const { stdout, code } = await runCLIWithSocket(['completion', 'bash'], socketPath, pidFile);
     expect(code).toBe(0);
-    expect(stdout).toContain('complete -F');
+    expect(stdout).toContain('complete -o bashdefault -o default -F');
     expect(stdout).toContain('create');
     expect(stdout).toContain('attach');
     expect(stdout).toContain('diagnose');
     expect(stdout).toContain('takeover-status');
     expect(stdout).toContain('takeover-cancel');
     expect(stdout).toContain('mx-coder completion sessions');
+    expect(stdout).toContain('_mx_coder_session_completions');
     expect(stdout).toContain('commands_with_sessions');
     expect(stdout).toContain('im');
     expect(stdout).toContain('tui');

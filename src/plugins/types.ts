@@ -39,7 +39,7 @@ export interface IMPlugin {
   /**
    * Create a dedicated conversation space when the platform supports channel-style session binding
    */
-  createChannelConversation?(input: { channelId: string; teamId: string; isPrivate: boolean }): Promise<string>;
+  createChannelConversation?(input: { channelId: string; teamId: string; isPrivate: boolean; userId?: string; sessionName?: string }): Promise<string>;
 
   /**
    * Update an existing live message

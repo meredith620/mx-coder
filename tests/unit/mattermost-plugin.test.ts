@@ -8,6 +8,7 @@ import {
   createConnectedMattermostPlugin,
   getMattermostCommandHelpText,
   getMattermostWelcomeText,
+  getDefaultMattermostConfigPath,
 } from '../../src/plugins/im/mattermost.js';
 
 type WSStub = {
@@ -151,24 +152,31 @@ describe('Mattermost config loader', () => {
     expect(() => loadMattermostConfig(configPath)).toThrow(/teamId/);
   });
 
-  test('spaceStrategy=channel 时支持 teamId', () => {
-    const configPath = path.join(tmpDir, 'config.json');
-    fs.writeFileSync(configPath, JSON.stringify({
-      im: {
-        mattermost: {
-          url: BASE_URL,
-          token: TOKEN,
-          channelId: CHANNEL_ID,
-          spaceStrategy: 'channel',
-          teamId: 'team-1',
+  test('默认配置路径存在时可直接加载', () => {
+    const originalHome = process.env.HOME;
+    process.env.HOME = tmpDir;
+    try {
+      const configPath = getDefaultMattermostConfigPath();
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify({
+        im: {
+          mattermost: {
+            url: BASE_URL,
+            token: TOKEN,
+            channelId: CHANNEL_ID,
+            spaceStrategy: 'channel',
+            teamId: 'team-1',
+          },
         },
-      },
-    }));
-
-    const cfg = loadMattermostConfig(configPath) as any;
-    expect(cfg.spaceStrategy).toBe('channel');
-    expect(cfg.teamId).toBe('team-1');
+      }));
+      const cfg = loadMattermostConfig();
+      expect(cfg.spaceStrategy).toBe('channel');
+      expect(cfg.teamId).toBe('team-1');
+    } finally {
+      process.env.HOME = originalHome;
+    }
   });
+
 
   test('createConnectedMattermostPlugin 会加载配置并执行 connect', async () => {
     const configPath = path.join(tmpDir, 'config.json');
@@ -360,6 +368,53 @@ describe('MattermostPlugin', () => {
     expect(opts.method).toBe('PUT');
     const body = JSON.parse(opts.body);
     expect(body.message).toBe('updated');
+  });
+
+  test('createChannelConversation 创建 private channel 并返回 id', async () => {
+    const plugin = new MattermostPlugin({ url: BASE_URL, token: TOKEN, channelId: CHANNEL_ID, teamId: 'team-1' });
+    fetchSpy = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ id: 'bot-123', username: 'mx-coder-bot' }),
+        text: async () => '',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        json: async () => ({ id: 'welcome-msg-id' }),
+        text: async () => '',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        json: async () => ({ id: 'created-channel-1' }),
+        text: async () => '',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        json: async () => ({}),
+        text: async () => '',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        json: async () => ({}),
+        text: async () => '',
+      });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    await plugin.connect({ sessionCount: 0, activeCount: 0 });
+    const channelId = await plugin.createChannelConversation!({ channelId: 'source-channel', teamId: 'team-1', isPrivate: true, userId: 'user-456', sessionName: 'test-session' });
+
+    expect(channelId).toBe('created-channel-1');
+    expect(fetchSpy.mock.calls[2][0]).toBe(`${BASE_URL}/api/v4/channels`);
+    const body = JSON.parse(fetchSpy.mock.calls[2][1].body);
+    expect(body.team_id).toBe('team-1');
+    expect(body.type).toBe('P');
+    expect(body.name).toMatch(/^mx-test-session-\d{12}-[a-z0-9]{4}$/);
+    expect(body.display_name).toMatch(/^mx-coder: test-session \[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]$/);
   });
 
   test('createLiveMessage 创建顶层 post 时不发送 root_id 并返回 id', async () => {

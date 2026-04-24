@@ -220,9 +220,11 @@ export class MattermostPlugin implements IMPlugin {
   private _lastHeartbeatSeq: number | null = null;
   private _wsHealthy = false;
   private _subscriptionHealthy = false;
+  private _listenedChannels = new Set<string>();
 
   constructor(config: MattermostConfig) {
     this._config = config;
+    this._listenedChannels.add(config.channelId);
   }
 
   /**
@@ -272,6 +274,10 @@ export class MattermostPlugin implements IMPlugin {
 
   onMessage(handler: (msg: IncomingMessage) => void): void {
     this._handlers.push(handler);
+  }
+
+  addListenedChannel(channelId: string): void {
+    this._listenedChannels.add(channelId);
   }
 
   getConnectionHealth(): {
@@ -501,7 +507,7 @@ export class MattermostPlugin implements IMPlugin {
     if (post.user_id === this._botUserId) return;
 
     const channelId = post.channel_id as string | undefined;
-    if (channelId !== this._config.channelId) return;
+    if (!channelId || !this._listenedChannels.has(channelId)) return;
 
     const incoming: IncomingMessage = {
       messageId: post.id as string,
@@ -553,6 +559,55 @@ export class MattermostPlugin implements IMPlugin {
     const data = await res.json() as { id: string };
     this._debugLog({ event: 'createLiveMessage_response', response: data });
     return data.id;
+  }
+
+  async createChannelConversation(input: { channelId: string; teamId: string; isPrivate: boolean; userId?: string; sessionName?: string }): Promise<string> {
+    const baseName = input.sessionName || 'session';
+    const now = new Date();
+    const timestamp = now.toISOString().slice(0, 16).replace(/[-:T]/g, '');
+    const displayTimestamp = now.toISOString().slice(0, 16).replace('T', ' ');
+    const suffix = Math.random().toString(36).slice(2, 6);
+
+    const name = `mx-${baseName}`
+      .toLowerCase()
+      .replace(/[^a-z0-9-_]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48);
+    const channelName = `${name || 'mx-session'}-${timestamp}-${suffix}`.slice(0, 64);
+    const displayName = `mx-coder: ${baseName} [${displayTimestamp}]`.slice(0, 64);
+
+    const res = await this._apiRequest('/api/v4/channels', {
+      method: 'POST',
+      body: JSON.stringify({
+        team_id: input.teamId,
+        name: channelName,
+        display_name: displayName,
+        purpose: `mx-coder session space for ${baseName}`,
+        type: input.isPrivate ? 'P' : 'O',
+      }),
+    });
+    const data = await res.json() as { id: string };
+    const newChannelId = data.id;
+
+    // Add bot to the channel
+    const botUserId = this.getBotUserId();
+    await this._apiRequest(`/api/v4/channels/${newChannelId}/members`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id: botUserId }),
+    });
+
+    // Add requesting user to the channel if provided
+    if (input.userId && input.userId !== botUserId) {
+      await this._apiRequest(`/api/v4/channels/${newChannelId}/members`, {
+        method: 'POST',
+        body: JSON.stringify({ user_id: input.userId }),
+      });
+    }
+
+    // Register this channel for listening
+    this._listenedChannels.add(newChannelId);
+
+    return newChannelId;
   }
 
   async updateMessage(messageId: string, content: MessageContent): Promise<void> {

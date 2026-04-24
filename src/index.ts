@@ -252,10 +252,24 @@ function getCompletionCommands(): string[] {
 function renderBashCompletion(): string {
   const commands = getCompletionCommands().join(' ');
   return `# bash completion for mx-coder
+_mx_coder_collect_sessions() {
+  mx-coder completion sessions 2>/dev/null || true
+}
+
+_mx_coder_session_completions() {
+  local cur sessions session
+  cur="\${1}"
+  COMPREPLY=()
+  sessions="$(_mx_coder_collect_sessions)"
+  while IFS= read -r session; do
+    [[ -z "\${session}" ]] && continue
+    [[ "\${session}" == "\${cur}"* ]] && COMPREPLY+=("\${session}")
+  done <<< "\${sessions}"
+}
+
 _mx_coder_completions() {
-  local cur prev command needs_session commands_with_sessions sessions
+  local cur command needs_session commands_with_sessions
   cur="\${COMP_WORDS[COMP_CWORD]}"
-  prev="\${COMP_WORDS[COMP_CWORD-1]}"
   command="\${COMP_WORDS[1]}"
   commands_with_sessions="attach open status remove diagnose takeover-status takeover-cancel"
 
@@ -271,13 +285,12 @@ _mx_coder_completions() {
 
   for needs_session in \${commands_with_sessions}; do
     if [[ \${command} == "\${needs_session}" && \${COMP_CWORD} -eq 2 ]]; then
-      sessions="$(mx-coder completion sessions 2>/dev/null)"
-      COMPREPLY=( $(compgen -W "\${sessions}" -- "\${cur}") )
+      _mx_coder_session_completions "\${cur}"
       return 0
     fi
   done
 }
-complete -F _mx_coder_completions mx-coder
+complete -o bashdefault -o default -F _mx_coder_completions mx-coder
 `;
 }
 

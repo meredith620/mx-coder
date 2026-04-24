@@ -209,6 +209,17 @@ export class Daemon {
 
     this._imDispatcher.start();
     console.log(`IM dispatcher started for plugins: ${pluginNames.join(', ')}`);
+
+    // Register existing session channels for listening
+    if (this._imPlugin && 'addListenedChannel' in this._imPlugin && typeof (this._imPlugin as any).addListenedChannel === 'function') {
+      for (const session of this.registry.list()) {
+        for (const binding of session.imBindings) {
+          if (binding.bindingKind === 'channel' && binding.channelId) {
+            (this._imPlugin as any).addListenedChannel(binding.channelId);
+          }
+        }
+      }
+    }
   }
 
   private _ensureIMActorRoles(session: Session, userId?: string): void {
@@ -386,11 +397,20 @@ export class Daemon {
 
     // E 类：普通文本消息，进入 Claude 处理流程
     const conversationKind = this._getMattermostConversationKind();
-    const session = this._getOrCreateSessionForConversation(
-      conversationKind === 'channel' ? (msg.channelId ?? channelId) : msg.threadId,
-      msg.plugin,
-      conversationKind,
-    );
+    let session: Session;
+    try {
+      session = this._getOrCreateSessionForConversation(
+        conversationKind === 'channel' ? (msg.channelId ?? channelId) : msg.threadId,
+        msg.plugin,
+        conversationKind,
+      );
+    } catch (err) {
+      await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+        kind: 'text',
+        text: `无法处理消息：${(err as Error).message}`,
+      });
+      return;
+    }
     this._ensureIMActorRoles(session, msg.userId);
     if (session.status === 'attached' || session.status === 'takeover_pending') {
       await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
@@ -407,12 +427,16 @@ export class Daemon {
       return;
     }
     try {
+      // In channel mode, if message is top-level, clear threadId so reply goes to channel directly
+      // If user manually created a thread (isTopLevel=false), keep threadId to reply in that thread
+      const effectiveThreadId = conversationKind === 'channel' && msg.isTopLevel ? '' : msg.threadId;
+
       this.registry.enqueueIMMessage(session.name, {
         text: msg.text,
         dedupeKey: msg.dedupeKey,
         plugin: msg.plugin,
         channelId: msg.channelId ?? channelId,
-        threadId: msg.threadId,
+        threadId: effectiveThreadId,
         messageId: msg.messageId,
         userId: msg.userId,
         receivedAt: msg.createdAt,
@@ -421,7 +445,10 @@ export class Daemon {
         event: 'im_message_enqueued',
         sessionName: session.name,
         sessionStatus: session.status,
-        threadId: msg.threadId,
+        threadId: effectiveThreadId,
+        originalThreadId: msg.threadId,
+        isTopLevel: msg.isTopLevel,
+        conversationKind,
         channelId: msg.channelId ?? channelId,
         messageId: msg.messageId,
       });
@@ -673,6 +700,12 @@ export class Daemon {
       : this.registry.list().find((session) => session.imBindings.some((binding) => binding.plugin === plugin && binding.bindingKind === 'channel' && binding.channelId === conversationId));
     if (existing) return existing;
 
+    // For channel binding, don't auto-create session - user should use /open command
+    if (bindingKind === 'channel') {
+      throw new Error(`No session bound to channel ${conversationId}. Please use /open <sessionName> to create a session channel.`);
+    }
+
+    // Only for thread binding: auto-create session
     const name = this._makeSessionName(conversationId);
     const session = this.registry.create(name, {
       workdir: process.cwd(),
@@ -680,9 +713,8 @@ export class Daemon {
     });
     this.registry.bindIM(name, {
       plugin,
-      bindingKind,
-      threadId: bindingKind === 'thread' ? conversationId : '',
-      ...(bindingKind === 'channel' ? { channelId: conversationId } : {}),
+      bindingKind: 'thread',
+      threadId: conversationId,
     });
     return session;
   }
@@ -872,9 +904,9 @@ export class Daemon {
 
     const strategy = overrideStrategy ?? this._getMattermostConversationKind();
     if (strategy === 'channel') {
-      const createChannelConversation = (imPlugin as IMPlugin & { createChannelConversation?: (input: { channelId: string; teamId: string; isPrivate: boolean }) => Promise<string> }).createChannelConversation;
+      const pluginWithChannel = imPlugin as IMPlugin & { createChannelConversation?: (input: { channelId: string; teamId: string; isPrivate: boolean; userId?: string; sessionName?: string }) => Promise<string> };
       const teamId = this._imPluginConfig['teamId'];
-      if (typeof createChannelConversation !== 'function' || typeof teamId !== 'string') {
+      if (typeof pluginWithChannel.createChannelConversation !== 'function' || typeof teamId !== 'string') {
         await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
           kind: 'text',
           text: `为 ${sessionName} 创建 channel 失败：当前配置或插件能力不完整。`,
@@ -884,7 +916,7 @@ export class Daemon {
 
       let newChannelId: string;
       try {
-        newChannelId = await createChannelConversation({ channelId, teamId, isPrivate: true });
+        newChannelId = await pluginWithChannel.createChannelConversation({ channelId, teamId, isPrivate: true, userId: msg.userId, sessionName });
       } catch (err) {
         await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
           kind: 'text',

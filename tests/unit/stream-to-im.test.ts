@@ -86,23 +86,30 @@ describe('StreamToIM — 流式输出防抖', () => {
     expect(mockIM.liveMessages.get(ids[1])).toBe('two');
   });
 
-  test('thinking 模式会输出 thinking 内容', async () => {
+  test('thinking 模式会输出纯 thinking 文本，不回显 JSON 结构', async () => {
     const thinkingHandler = new StreamToIM(mockIM, { plugin: 'mock', threadId: 't1' }, 'thinking');
-    await thinkingHandler.onEvent({ type: 'assistant', messageId: 'turn-1', payload: { content: [{ type: 'thinking', text: 'internal reasoning' }] } } as any);
+    await thinkingHandler.onEvent({ type: 'assistant', messageId: 'turn-1', payload: { content: [{ type: 'thinking', thinking: { text: 'internal reasoning', meta: { ignored: true } } }] } } as any);
     const msgId = [...mockIM.liveMessages.keys()].at(-1)!;
     expect(mockIM.liveMessages.get(msgId)).toContain('[thinking]');
     expect(mockIM.liveMessages.get(msgId)).toContain('internal reasoning');
+    expect(mockIM.liveMessages.get(msgId)).not.toContain('{');
+    expect(mockIM.liveMessages.get(msgId)).not.toContain('ignored');
   });
 
-  test('verbose 模式会输出 tool_use 和 tool_result 摘要', async () => {
+  test('verbose 模式会输出 tool_use 和 tool_result 的纯内容字段', async () => {
     const verboseHandler = new StreamToIM(mockIM, { plugin: 'mock', threadId: 't1' }, 'verbose');
     await verboseHandler.onEvent({ type: 'assistant', messageId: 'turn-1', payload: { content: [
-      { type: 'tool_use', name: 'Read', input: { file_path: '/tmp/a.txt' } },
-      { type: 'tool_result', content: { ok: true, text: 'hello' } },
+      { type: 'tool_use', name: 'Read', input: { file_path: '/tmp/a.txt', note: 'visible input' } },
+      { type: 'tool_result', content: { text: 'hello', meta: { ignored: true } } },
     ] } } as any);
     const msgId = [...mockIM.liveMessages.keys()].at(-1)!;
-    expect(mockIM.liveMessages.get(msgId)).toContain('[tool_use] Read');
+    expect(mockIM.liveMessages.get(msgId)).toContain('[tool_use]');
+    expect(mockIM.liveMessages.get(msgId)).toContain('/tmp/a.txt');
+    expect(mockIM.liveMessages.get(msgId)).toContain('visible input');
     expect(mockIM.liveMessages.get(msgId)).toContain('[tool_result]');
+    expect(mockIM.liveMessages.get(msgId)).toContain('hello');
+    expect(mockIM.liveMessages.get(msgId)).not.toContain('{');
+    expect(mockIM.liveMessages.get(msgId)).not.toContain('ignored');
   });
 
   test('normal 模式不会输出 thinking', async () => {

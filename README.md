@@ -79,6 +79,7 @@ source ~/.zshrc
 说明：
 - 当前 T1/T2 已支持静态子命令补全，以及通过 `completion sessions` 获取动态 session 名
 - `eval "$(mx-coder completion bash)"` / `eval "$(mx-coder completion zsh)"` 用于安装补全脚本
+- 安装后 `attach/open/status/remove/diagnose/takeover-status/takeover-cancel` 会动态补全 session 名
 - `completion sessions` 输出的是 session 名列表，供补全脚本内部调用，不应直接用于 `eval`
 
 ## 配置

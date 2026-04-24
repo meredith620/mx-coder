@@ -36,13 +36,30 @@ function truncate(text: string, maxChars: number): string {
   return text.length > maxChars ? `${text.slice(0, maxChars)}…(已截断)` : text;
 }
 
-function stringifyUnknown(value: unknown): string {
-  if (typeof value === 'string') return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
+function collectPlainText(value: unknown): string[] {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? [trimmed] : [];
   }
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collectPlainText(item));
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    if ('thinking' in record) return collectPlainText(record['thinking']);
+    if ('text' in record) return collectPlainText(record['text']);
+    if ('content' in record) return collectPlainText(record['content']);
+    if ('result' in record) return collectPlainText(record['result']);
+    if ('message' in record) return collectPlainText(record['message']);
+    if ('stdout' in record) return collectPlainText(record['stdout']);
+    if ('stderr' in record) return collectPlainText(record['stderr']);
+    return Object.values(record).flatMap((item) => collectPlainText(item));
+  }
+  return [];
+}
+
+function extractPlainText(value: unknown): string {
+  return collectPlainText(value).join('\n').trim();
 }
 
 export class StreamToIM {
@@ -116,21 +133,21 @@ export class StreamToIM {
     }
     if (block.type === 'thinking') {
       if (this._visibility === 'normal') return '';
-      const thinking = truncate(block.text ?? stringifyUnknown(block), THINKING_MAX_CHARS);
+      const thinking = truncate(extractPlainText(block['thinking'] ?? block.text), THINKING_MAX_CHARS);
       return thinking ? `\n\n[thinking]\n${thinking}` : '';
     }
     if (this._visibility !== 'verbose') {
       return '';
     }
     if (block.type === 'tool_use') {
-      const toolName = typeof block['name'] === 'string' ? block['name'] : 'unknown';
       const input = block['input'] ?? block['tool_input'];
-      const summary = input === undefined ? '' : `\n${truncate(stringifyUnknown(input), TOOL_RESULT_MAX_CHARS)}`;
-      return `\n\n[tool_use] ${toolName}${summary}`;
+      const summary = truncate(extractPlainText(input), TOOL_RESULT_MAX_CHARS);
+      return summary ? `\n\n[tool_use]\n${summary}` : '';
     }
     if (block.type === 'tool_result') {
-      const content = block['content'];
-      return `\n\n[tool_result]\n${truncate(stringifyUnknown(content ?? block), TOOL_RESULT_MAX_CHARS)}`;
+      const content = block['content'] ?? block['result'] ?? block['stdout'] ?? block['stderr'] ?? block['text'];
+      const summary = truncate(extractPlainText(content), TOOL_RESULT_MAX_CHARS);
+      return summary ? `\n\n[tool_result]\n${summary}` : '';
     }
     return '';
   }

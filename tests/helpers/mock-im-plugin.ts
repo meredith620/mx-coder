@@ -84,7 +84,7 @@ export class MockIMPlugin implements IMPlugin {
     return msgId;
   }
 
-  async createChannelConversation(input: { channelId: string; teamId: string; isPrivate: boolean; }): Promise<string> {
+  async createChannelConversation(input: { channelId: string; teamId: string; isPrivate: boolean; userId?: string; sessionName?: string }): Promise<string> {
     const conversationId = uuidv4();
     this.createdConversations.push({
       channelId: input.channelId,
