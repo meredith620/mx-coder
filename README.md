@@ -128,7 +128,8 @@ source ~/.zshrc
 - [docs/TODO.md](docs/TODO.md) — 当前未完成事项
 - [docs/MATTERMOST-GAPS.md](docs/MATTERMOST-GAPS.md) — Mattermost 方向剩余差距
 - [docs/IMPL-SLICES.md](docs/IMPL-SLICES.md) — 当前实现切片入口
-- [docs/IMPL-SLICES.phase3-future-features.md](docs/IMPL-SLICES.phase3-future-features.md) — phase3 功能规划
+- [docs/IMPL-SLICES.p1-p3-stabilization.md](docs/IMPL-SLICES.p1-p3-stabilization.md) — 当前未完成主线任务的 TDD 切片
+- [docs/IMPL-SLICES.v2.1.md](docs/IMPL-SLICES.v2.1.md) — v2.1 新需求的 TDD 切片
 
 ### 历史与归档
 

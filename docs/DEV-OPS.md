@@ -59,42 +59,6 @@ echo 'eval "$(mx-coder completion bash)"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-## 3. Systemd 集成
-
-为了确保 `mx-coder daemon` 在后台稳定运行并随系统自启，建议使用 systemd user 模式。
-
-### 3.1 自动配置
-
-执行以下命令自动安装服务：
-```bash
-mx-coder setup systemd --user
-```
-
-### 3.2 服务模板 (mx-coder.service)
-
-```ini
-[Unit]
-Description=mx-coder Daemon
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=%h/.nvm/versions/node/v20.x.x/bin/mx-coder daemon
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=default.target
-```
-
-### 3.3 常用操作
-
-- **查看日志**：`journalctl --user -u mx-coder -f`
-- **重启服务**：`systemctl --user restart mx-coder`
-- **查看状态**：`systemctl --user status mx-coder`
-
 #### Zsh
 
 ```bash
@@ -113,6 +77,49 @@ mx-coder completion sessions
 ```
 
 该命令用于输出当前 daemon 中可补全的 session 名，供 shell completion 内部调用；无 session 时输出为空且不报错。
+
+## 3. Systemd 集成
+
+为了确保 `mx-coder daemon` 在后台稳定运行并随系统自启，建议使用 systemd user 模式。
+
+### 3.1 当前状态
+
+`mx-coder setup systemd --user` **尚未实现**，当前仍属于 v2.1 计划项。
+在该命令落地前，请先采用手动方式配置 systemd user service。
+
+### 3.2 手动服务模板 (mx-coder.service)
+
+```ini
+[Unit]
+Description=mx-coder Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.nvm/versions/node/v20.x.x/bin/mx-coder start-fg
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+```
+
+### 3.3 手动安装步骤
+
+1. 将 service 文件写入 `~/.config/systemd/user/mx-coder.service`
+2. 根据本机实际安装位置，把 `ExecStart` 调整为可用的 `mx-coder` 启动命令
+3. 执行 `systemctl --user daemon-reload`
+4. 执行 `systemctl --user enable --now mx-coder`
+
+### 3.4 常用操作
+
+- **查看日志**：`journalctl --user -u mx-coder -f`
+- **重启服务**：`systemctl --user restart mx-coder`
+- **查看状态**：`systemctl --user status mx-coder`
+
+当 `mx-coder setup systemd` 在 v2.1 中实现后，这一节应改回自动配置优先、手动步骤作为 fallback。
 
 ### 卸载本地安装
 
