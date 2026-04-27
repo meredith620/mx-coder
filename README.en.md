@@ -1,4 +1,4 @@
-# mx-coder (Multi-modal Coder)
+# mx-coder (Multi-modal Cross Coder)
 
 An AI CLI session bridge for managing multiple AI CLI sessions with native terminal interaction and remote IM continuation.
 

@@ -1,4 +1,4 @@
-# mx-coder (Multi-modal Coder)
+# mx-coder (Multi-modal Cross Coder)
 
 AI CLI 会话桥接工具——管理多个 AI CLI 会话，支持终端直接交互与 IM 远程续接。
 

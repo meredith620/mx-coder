@@ -374,7 +374,7 @@ async function handleStart(args: Record<string, string | undefined>) {
   fs.mkdirSync(path.dirname(PERSISTENCE_PATH), { recursive: true });
 
   const imPluginName = args.plugin ?? getDefaultIMPluginName();
-  const imConfigPath = args.config;
+  const imConfigPath = args.config ?? getIMPluginFactory(imPluginName).getDefaultConfigPath();
   const childArgs = buildDaemonChildArgs(
     SOCKET_PATH,
     PID_FILE,
@@ -399,7 +399,7 @@ async function handleStartForeground(argv: string[]) {
   const parsed = argv.length > 0 ? parseCLIArgs(['start', ...argv]) : { command: 'start', args: {} as Record<string, string | undefined> };
   const args = parsed.args;
   const imPluginName = args.plugin ?? getDefaultIMPluginName();
-  const imConfigPath = args.config;
+  const imConfigPath = args.config ?? getIMPluginFactory(imPluginName).getDefaultConfigPath();
   const childArgs = buildDaemonChildArgs(
     SOCKET_PATH,
     '',

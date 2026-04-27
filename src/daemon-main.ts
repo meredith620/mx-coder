@@ -48,17 +48,19 @@ if (logPath) {
   process.on('exit', () => logStream.end());
 }
 
+const disableIM = process.env.MX_CODER_DISABLE_IM === '1';
 const resolvedImConfigPath = imConfigPath && imConfigPath.trim() !== ''
-  ? imConfigPath
-  : path.join(os.homedir(), '.mx-coder', 'config.json');
-const resolvedImPluginConfig = fs.existsSync(resolvedImConfigPath)
-  ? loadMattermostConfig(resolvedImConfigPath) as unknown as Record<string, unknown>
+  ? imConfigPath.trim()
+  : undefined;
+const enableIM = !disableIM && !!resolvedImConfigPath;
+const resolvedImPluginConfig = enableIM && fs.existsSync(resolvedImConfigPath!)
+  ? loadMattermostConfig(resolvedImConfigPath!) as unknown as Record<string, unknown>
   : undefined;
 
 const daemon = new Daemon(socketPath, {
   persistencePath,
-  ...(resolvedImConfigPath ? { imConfigPath: resolvedImConfigPath } : {}),
-  enableIM: true,
+  ...(enableIM && resolvedImConfigPath ? { imConfigPath: resolvedImConfigPath } : {}),
+  enableIM,
   imPluginName,
   ...(resolvedImPluginConfig ? { imPluginConfig: resolvedImPluginConfig } : {}),
 });

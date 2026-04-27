@@ -22,6 +22,7 @@ describe('Re-attach after CLI exit E2E', () => {
     daemonProc = spawn(process.execPath, ['--import', 'tsx', DAEMON_ENTRY, socketPath, '', persistencePath], {
       stdio: 'ignore',
       detached: false,
+      env: { ...process.env, MX_CODER_DISABLE_IM: '1' },
     });
 
     await new Promise<void>((resolve, reject) => {
@@ -82,6 +83,7 @@ describe('Re-attach after CLI exit E2E', () => {
     daemonProc = spawn(process.execPath, ['--import', 'tsx', DAEMON_ENTRY, socketPath, '', persistencePath], {
       stdio: 'ignore',
       detached: false,
+      env: { ...process.env, MX_CODER_DISABLE_IM: '1' },
     });
 
     await new Promise<void>((resolve, reject) => {
@@ -158,6 +160,7 @@ describe('Re-attach after CLI exit E2E', () => {
     daemonProc = spawn(process.execPath, ['--import', 'tsx', DAEMON_ENTRY, socketPath, '', persistencePath], {
       stdio: 'ignore',
       detached: false,
+      env: { ...process.env, MX_CODER_DISABLE_IM: '1' },
     });
 
     await new Promise<void>((resolve, reject) => {
@@ -201,6 +204,7 @@ describe('Re-attach after CLI exit E2E', () => {
     daemonProc = spawn(process.execPath, ['--import', 'tsx', DAEMON_ENTRY, socketPath, '', persistencePath], {
       stdio: 'ignore',
       detached: false,
+      env: { ...process.env, MX_CODER_DISABLE_IM: '1' },
     });
 
     await new Promise<void>((resolve, reject) => {

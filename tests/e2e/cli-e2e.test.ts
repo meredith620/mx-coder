@@ -70,6 +70,7 @@ describe('mx-coder CLI E2E', () => {
     const startResult = await runCLIWithSocket(['start'], restartSocket, restartPidFile, {
       MX_CODER_SESSIONS: restartSessions,
       MX_CODER_LOG: restartLog,
+      MX_CODER_DISABLE_IM: '1',
     });
     expect(startResult.code).toBe(0);
     expect(startResult.stdout).toContain('Daemon started');
@@ -78,6 +79,7 @@ describe('mx-coder CLI E2E', () => {
     const { stdout, code } = await runCLIWithSocket(['restart'], restartSocket, restartPidFile, {
       MX_CODER_SESSIONS: restartSessions,
       MX_CODER_LOG: restartLog,
+      MX_CODER_DISABLE_IM: '1',
     });
     expect(code).toBe(0);
     expect(stdout).toContain('Restarting daemon...');
@@ -93,6 +95,7 @@ describe('mx-coder CLI E2E', () => {
     const stopResult = await runCLIWithSocket(['stop'], restartSocket, restartPidFile, {
       MX_CODER_SESSIONS: restartSessions,
       MX_CODER_LOG: restartLog,
+      MX_CODER_DISABLE_IM: '1',
     });
     expect(stopResult.code).toBe(0);
   });
@@ -106,6 +109,7 @@ describe('mx-coder CLI E2E', () => {
     const { stdout, code } = await runCLIWithSocket(['restart'], restartSocket, restartPidFile, {
       MX_CODER_SESSIONS: restartSessions,
       MX_CODER_LOG: restartLog,
+      MX_CODER_DISABLE_IM: '1',
     });
     expect(code).toBe(0);
     expect(stdout).toContain('Restarting daemon...');
@@ -116,6 +120,7 @@ describe('mx-coder CLI E2E', () => {
     const stopResult = await runCLIWithSocket(['stop'], restartSocket, restartPidFile, {
       MX_CODER_SESSIONS: restartSessions,
       MX_CODER_LOG: restartLog,
+      MX_CODER_DISABLE_IM: '1',
     });
     expect(stopResult.code).toBe(0);
   });
