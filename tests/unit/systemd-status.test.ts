@@ -46,6 +46,13 @@ describe('systemd status and uninstall', () => {
     expect(status.repairHint).toContain('setup systemd');
   });
 
+  test('repair 建议在 unit 文件匹配时消失', () => {
+    writeUserServiceUnit();
+    const status = getUserServiceStatus(() => ({ code: 0, stdout: 'enabled\n', stderr: '' }));
+    expect(status.needsRepair).toBe(false);
+    expect(status.repairHint).toBeUndefined();
+  });
+
   test('uninstall 仅移除 user service 文件', () => {
     const unitPath = getUserSystemdUnitPath();
     writeUserServiceUnit();

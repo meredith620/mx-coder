@@ -568,6 +568,9 @@ async function handleSetup(args: Record<string, string | undefined>) {
       return { code: child.exitCode ?? 0, stdout: '', stderr: '' };
     });
     console.log(JSON.stringify(status, null, 2));
+    if (status.needsRepair && status.repairHint) {
+      console.log(status.repairHint);
+    }
     return;
   }
 

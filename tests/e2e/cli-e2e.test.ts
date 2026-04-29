@@ -244,6 +244,28 @@ describe('mx-coder CLI E2E', () => {
     expect(recordedArgs).toContain('daemon-reload');
   });
 
+  test('setup systemd --user --status 在 unit 失配时输出 repair 提示', async () => {
+    const fakeBin = path.join(tmpDir, 'bin-systemd-repair');
+    fs.mkdirSync(fakeBin, { recursive: true });
+    const fakeSystemctl = path.join(fakeBin, 'systemctl');
+    fs.writeFileSync(fakeSystemctl, `#!/bin/sh\nif [ "$2" = "is-enabled" ]; then echo disabled; exit 1; fi\nif [ "$2" = "is-active" ]; then echo inactive; exit 3; fi\nexit 0\n`, { mode: 0o755 });
+
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mx-systemd-repair-home-'));
+    const unitDir = path.join(homeDir, '.config', 'systemd', 'user');
+    fs.mkdirSync(unitDir, { recursive: true });
+    fs.writeFileSync(path.join(unitDir, 'mx-coder.service'), '[Unit]\nDescription=old\n');
+
+    const { stdout, code } = await runCLIWithSocket(
+      ['setup', 'systemd', '--user', '--status'],
+      socketPath,
+      pidFile,
+      { PATH: `${fakeBin}:${process.env.PATH ?? ''}`, HOME: homeDir },
+    );
+    expect(code).toBe(0);
+    expect(stdout).toContain('needsRepair');
+    expect(stdout).toContain('repairHint');
+  });
+
   test('create bug-fix --workdir <dir> 创建 session', async () => {
     const workdir = path.join(tmpDir, 'myapp');
     fs.mkdirSync(workdir, { recursive: true });
