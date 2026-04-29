@@ -1,7 +1,7 @@
-type CLICommand = 'create' | 'attach' | 'diagnose' | 'takeover-status' | 'takeover-cancel' | 'import' | 'list' | 'status' | 'remove' | 'start' | 'stop' | 'restart' | 'completion' | 'im' | 'im-init' | 'im-verify' | 'im-run' | 'tui' | 'open';
+type CLICommand = 'create' | 'attach' | 'diagnose' | 'takeover-status' | 'takeover-cancel' | 'import' | 'list' | 'status' | 'remove' | 'start' | 'stop' | 'restart' | 'completion' | 'im' | 'im-init' | 'im-verify' | 'im-run' | 'tui' | 'open' | 'setup';
 type IMSubcommand = 'init' | 'verify' | 'run';
 
-const KNOWN_COMMANDS = new Set<CLICommand>(['create', 'attach', 'diagnose', 'takeover-status', 'takeover-cancel', 'import', 'list', 'status', 'remove', 'start', 'stop', 'restart', 'completion', 'im', 'im-init', 'im-verify', 'im-run', 'tui', 'open']);
+const KNOWN_COMMANDS = new Set<CLICommand>(['create', 'attach', 'diagnose', 'takeover-status', 'takeover-cancel', 'import', 'list', 'status', 'remove', 'start', 'stop', 'restart', 'completion', 'im', 'im-init', 'im-verify', 'im-run', 'tui', 'open', 'setup']);
 const IM_SUBCOMMANDS = new Set<IMSubcommand>(['init', 'verify', 'run']);
 
 export interface ParsedCLI {
@@ -111,6 +111,13 @@ export function parseCLIArgs(argv: string[]): ParsedCLI {
       break;
     case 'open':
       if (positionals[0] && !args['name']) args['name'] = positionals[0];
+      break;
+    case 'setup':
+      if (positionals[0] && !args['target']) args['target'] = positionals[0];
+      if (argsRest.includes('--user')) args['user'] = 'true';
+      if (argsRest.includes('--dry-run')) args['dry-run'] = 'true';
+      if (argsRest.includes('--status')) args['status'] = 'true';
+      if (argsRest.includes('--uninstall')) args['uninstall'] = 'true';
       break;
     case 'im':
       if (subcommand === 'run' && positionals[0] && !args['sessionName']) args['sessionName'] = positionals[0];

@@ -11,6 +11,7 @@ import { BUILD_GIT_HASH, BUILD_VERSION } from './generated/build-info.js';
 import { getCLIPlugin, getDefaultCLIPluginName } from './plugins/cli/registry.js';
 import { getClaudeSessionPath, hasClaudeSession } from './plugins/cli/claude-code.js';
 import { getIMPluginFactory, getDefaultIMPluginName } from './plugins/im/registry.js';
+import { renderUserServiceUnit, writeUserServiceUnit, installUserService, getUserServiceStatus, uninstallUserService } from './systemd.js';
 import type { Session } from './types.js';
 
 const SOCKET_PATH = process.env.MX_CODER_SOCKET ?? path.join(os.tmpdir(), 'mx-coder-daemon.sock');
@@ -132,6 +133,9 @@ async function main() {
       case 'open':
         await handleOpen(parsed.args);
         break;
+      case 'setup':
+        await handleSetup(parsed.args);
+        break;
       case 'list':
         await handleList();
         break;
@@ -191,6 +195,8 @@ COMMANDS:
   attach <name> [-n|--name <name>]  Attach to a session
   open <name> [-n|--name <name>] [--space-strategy <thread|channel>]
                                   Open a session in IM with one-shot space override
+  setup systemd [--user] [--dry-run]
+                                  Preview systemd user service unit
   diagnose <name>                   Print local diagnostic info for a session
   takeover-status <name>            Show takeover request state
   takeover-cancel <name>            Cancel a pending takeover request
@@ -236,6 +242,7 @@ function getCompletionCommands(): string[] {
     'create',
     'attach',
     'open',
+    'setup',
     'diagnose',
     'takeover-status',
     'takeover-cancel',
@@ -542,6 +549,46 @@ async function handleOpen(args: Record<string, string | undefined>) {
   }
 
   console.log(JSON.stringify(response.data, null, 2));
+}
+
+async function handleSetup(args: Record<string, string | undefined>) {
+  const target = args.target;
+  if (target !== 'systemd') {
+    throw new Error(`Unsupported setup target: ${target ?? '(none)'}`);
+  }
+
+  if (args['dry-run'] === 'true') {
+    console.log(renderUserServiceUnit());
+    return;
+  }
+
+  if (args['status'] === 'true') {
+    const status = getUserServiceStatus((cmdArgs) => {
+      const child = spawn('systemctl', cmdArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+      return { code: child.exitCode ?? 0, stdout: '', stderr: '' };
+    });
+    console.log(JSON.stringify(status, null, 2));
+    return;
+  }
+
+  if (args['uninstall'] === 'true') {
+    const result = uninstallUserService((cmdArgs) => {
+      const child = spawn('systemctl', cmdArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+      return { code: child.exitCode ?? 0, stdout: '', stderr: '' };
+    });
+    if (!result.ok) throw new Error(result.error);
+    console.log('systemd user service uninstalled');
+    return;
+  }
+
+  writeUserServiceUnit();
+  const result = installUserService((cmdArgs) => {
+    const child = spawn('systemctl', cmdArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+    return { code: child.exitCode ?? 0, stdout: '', stderr: '' };
+  });
+  if (!result.ok) throw new Error(result.error);
+  console.log('systemctl --user daemon-reload');
+  console.log('systemctl --user enable --now mx-coder.service');
 }
 
 async function handleAttach(args: Record<string, string | undefined>) {

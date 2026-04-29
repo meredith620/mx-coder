@@ -174,6 +174,76 @@ describe('mx-coder CLI E2E', () => {
     expect(stdout).toContain('override-demo');
   });
 
+  test('setup systemd --user --dry-run 输出 service 预览', async () => {
+    const { stdout, code } = await runCLIWithSocket(['setup', 'systemd', '--user', '--dry-run'], socketPath, pidFile);
+    expect(code).toBe(0);
+    expect(stdout).toContain('[Unit]');
+    expect(stdout).toContain('[Service]');
+    expect(stdout).toContain('[Install]');
+    expect(stdout).toContain('WantedBy=default.target');
+  });
+
+  test('setup systemd --user 输出 install 结果', async () => {
+    const fakeBin = path.join(tmpDir, 'bin-systemd-install');
+    fs.mkdirSync(fakeBin, { recursive: true });
+    const argsFile = path.join(tmpDir, 'systemctl-install-args.txt');
+    const fakeSystemctl = path.join(fakeBin, 'systemctl');
+    fs.writeFileSync(fakeSystemctl, `#!/bin/sh\nprintf '%s\\n' "$@" >> "${argsFile}"\nexit 0\n`, { mode: 0o755 });
+
+    const { stdout, code } = await runCLIWithSocket(
+      ['setup', 'systemd', '--user'],
+      socketPath,
+      pidFile,
+      { PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
+    );
+    expect(code).toBe(0);
+    expect(stdout).toContain('daemon-reload');
+    expect(stdout).toContain('enable --now');
+
+    const recordedArgs = fs.readFileSync(argsFile, 'utf8');
+    expect(recordedArgs).toContain('--user');
+    expect(recordedArgs).toContain('daemon-reload');
+    expect(recordedArgs).toContain('enable');
+    expect(recordedArgs).toContain('--now');
+  });
+
+  test('setup systemd --user --status 输出当前服务状态', async () => {
+    const fakeBin = path.join(tmpDir, 'bin-systemd-status');
+    fs.mkdirSync(fakeBin, { recursive: true });
+    const fakeSystemctl = path.join(fakeBin, 'systemctl');
+    fs.writeFileSync(fakeSystemctl, `#!/bin/sh\nif [ "$2" = "is-enabled" ]; then echo enabled; exit 0; fi\nif [ "$2" = "is-active" ]; then echo active; exit 0; fi\nexit 0\n`, { mode: 0o755 });
+
+    const { stdout, code } = await runCLIWithSocket(
+      ['setup', 'systemd', '--user', '--status'],
+      socketPath,
+      pidFile,
+      { PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
+    );
+    expect(code).toBe(0);
+    expect(stdout).toContain('enabled');
+    expect(stdout).toContain('active');
+  });
+
+  test('setup systemd --user --uninstall 卸载 user service', async () => {
+    const fakeBin = path.join(tmpDir, 'bin-systemd-uninstall');
+    fs.mkdirSync(fakeBin, { recursive: true });
+    const argsFile = path.join(tmpDir, 'systemctl-uninstall-args.txt');
+    const fakeSystemctl = path.join(fakeBin, 'systemctl');
+    fs.writeFileSync(fakeSystemctl, `#!/bin/sh\nprintf '%s\\n' "$@" >> "${argsFile}"\nexit 0\n`, { mode: 0o755 });
+
+    const { stdout, code } = await runCLIWithSocket(
+      ['setup', 'systemd', '--user', '--uninstall'],
+      socketPath,
+      pidFile,
+      { PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
+    );
+    expect(code).toBe(0);
+    expect(stdout).toContain('uninstalled');
+
+    const recordedArgs = fs.readFileSync(argsFile, 'utf8');
+    expect(recordedArgs).toContain('daemon-reload');
+  });
+
   test('create bug-fix --workdir <dir> 创建 session', async () => {
     const workdir = path.join(tmpDir, 'myapp');
     fs.mkdirSync(workdir, { recursive: true });

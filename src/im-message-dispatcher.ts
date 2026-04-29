@@ -323,6 +323,7 @@ export class IMMessageDispatcher {
 
     try {
       session.activeOperatorId = message.userId;
+      session.activeMessageId = message.messageId;
       this._markMessageStatus(sessionName, message.messageId, 'running');
       await this._opts.workerManager.ensureRunning(sessionName);
       if (previousCursor) {
@@ -340,12 +341,16 @@ export class IMMessageDispatcher {
       await this._opts.workerManager.sendMessage(sessionName, message.content);
       await turnDone;
       this._markMessageStatus(sessionName, message.messageId, 'completed');
+      session.lastTurnOutcome = 'completed';
+      session.lastResultAt = new Date().toISOString();
 
       if (wasUninitialized) {
         try { this._opts.registry.updateSessionId(sessionName, session.sessionId); } catch {}
       }
     } catch (err) {
       this._markMessageStatus(sessionName, message.messageId, 'failed');
+      session.lastTurnOutcome = 'failed';
+      session.lastResultAt = new Date().toISOString();
       debugLog({ event: 'process_failed', sessionName, messageId: message.messageId, error: (err as Error).message });
     } finally {
       stopTyping();
@@ -354,6 +359,8 @@ export class IMMessageDispatcher {
         this._activeTurns.delete(sessionName);
       }
       if (!turnResolved) {
+        session.lastTurnOutcome = 'interrupted';
+        session.interruptReason = 'worker_crash';
         debugLog({ event: 'turn_incomplete', sessionName, messageId: message.messageId });
       }
       try {
@@ -361,6 +368,7 @@ export class IMMessageDispatcher {
         const currentSession = this._opts.registry.get(sessionName);
         if (currentSession && currentSession.messageQueue.every(m => m.status !== 'running' && m.status !== 'waiting_approval')) {
           delete currentSession.activeOperatorId;
+          delete currentSession.activeMessageId;
         }
         debugLog({ event: 'mark_im_done', sessionName, messageId: message.messageId, sessionStatus: this._opts.registry.get(sessionName)?.status });
         this._opts.onSessionImDone?.(sessionName);

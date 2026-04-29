@@ -314,6 +314,65 @@ export class Daemon {
     }
     const factory = getIMPluginFactory(msg.plugin);
 
+    if (trimmed.startsWith('//')) {
+      const passthrough = trimmed.slice(1);
+      if (passthrough.trim() === '/') {
+        await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+          kind: 'text',
+          text: 'passthrough 命令不能为空。',
+        });
+        return;
+      }
+
+      const conversationKind = this._getMattermostConversationKind();
+      let session: Session;
+      try {
+        session = this._getOrCreateSessionForConversation(
+          conversationKind === 'channel' ? (msg.channelId ?? channelId) : msg.threadId,
+          msg.plugin,
+          conversationKind,
+        );
+      } catch (err) {
+        await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+          kind: 'text',
+          text: `无法处理消息：${(err as Error).message}`,
+        });
+        return;
+      }
+      if ((this._acl.authorize(session.sessionId, msg.userId, 'send_text')) === 'deny') {
+        await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+          kind: 'text',
+          text: '无权限使用 passthrough。',
+        });
+        return;
+      }
+      if (session.status === 'attached' || session.status === 'takeover_pending') {
+        await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+          kind: 'text',
+          text: `当前会话 \`${session.name}\` 正在终端中使用，不接收 IM 消息。可使用 \`/takeover ${session.name}\` 请求接管。`,
+        });
+        return;
+      }
+      this._ensureIMActorRoles(session, msg.userId);
+      try {
+        const effectiveThreadId = conversationKind === 'channel' && msg.isTopLevel ? '' : msg.threadId;
+        this.registry.enqueueIMMessage(session.name, {
+          text: passthrough,
+          dedupeKey: msg.dedupeKey,
+          plugin: msg.plugin,
+          channelId: msg.channelId ?? channelId,
+          threadId: effectiveThreadId,
+          messageId: msg.messageId,
+          userId: msg.userId,
+          receivedAt: msg.createdAt,
+          isPassthrough: true as any,
+        });
+      } catch (err) {
+        console.error(`Failed to enqueue IM passthrough message: ${(err as Error).message}`);
+      }
+      return;
+    }
+
     if (trimmed === '/help') {
       await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
         kind: 'text',
@@ -412,6 +471,27 @@ export class Daemon {
       return;
     }
     this._ensureIMActorRoles(session, msg.userId);
+    if (session.lifecycleStatus === 'archived') {
+      await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+        kind: 'text',
+        text: `当前会话 \`${session.name}\` 已归档，不能接收新的 IM 消息。`,
+      });
+      return;
+    }
+    if (session.initState === 'initializing') {
+      await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+        kind: 'text',
+        text: `当前会话 \`${session.name}\` 正在初始化，请稍后重试。`,
+      });
+      return;
+    }
+    if (session.initState === 'init_failed') {
+      await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+        kind: 'text',
+        text: `当前会话 \`${session.name}\` 初始化失败，暂不接收新的 IM 消息。`,
+      });
+      return;
+    }
     if (session.status === 'attached' || session.status === 'takeover_pending') {
       await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
         kind: 'text',
@@ -1136,6 +1216,13 @@ export class Daemon {
 
       if (session.status === 'takeover_pending') {
         this.registry.completeTakeover(name);
+      } else if (session.status === 'attach_pending') {
+        this._server.pushEventToAttachWaiter(name, {
+          type: 'event',
+          event: 'session_resume',
+          data: { name },
+        });
+        return {};
       } else {
         this.registry.markDetached(name, exitReason);
       }
@@ -1209,7 +1296,7 @@ export class Daemon {
       return { session: this._serializeSession(this.registry.get(name)!) };
     });
 
-    this._server.handle('takeoverStatus', async (args) => {
+    this._server.handle('takeoverStatus', async (args, actor) => {
       const name = args['name'] as string;
       const session = this.registry.get(name);
       if (!session) {
@@ -1217,6 +1304,7 @@ export class Daemon {
         e.code = 'SESSION_NOT_FOUND';
         throw e;
       }
+      this._checkAcl(actor, 'takeoverStatus', session);
       return {
         session: this._serializeSession(session),
         takeoverRequestedBy: session.takeoverRequestedBy,
@@ -1224,7 +1312,7 @@ export class Daemon {
       };
     });
 
-    this._server.handle('takeoverCancel', async (args) => {
+    this._server.handle('takeoverCancel', async (args, actor) => {
       const name = args['name'] as string;
       const session = this.registry.get(name);
       if (!session) {
@@ -1232,13 +1320,21 @@ export class Daemon {
         e.code = 'SESSION_NOT_FOUND';
         throw e;
       }
+      this._checkAcl(actor, 'takeoverCancel', session);
       this.registry.cancelTakeover(name);
       if (this._store) void this._store.flush();
       return { session: this._serializeSession(this.registry.get(name)!) };
     });
 
-    this._server.handle('open', async (args) => {
+    this._server.handle('open', async (args, actor) => {
       const name = args['name'] as string;
+      const sessionForAcl = this.registry.get(name);
+      if (!sessionForAcl) {
+        const e = new Error(`Session not found: ${name}`) as Error & { code: ErrorCode };
+        e.code = 'SESSION_NOT_FOUND';
+        throw e;
+      }
+      this._checkAcl(actor, 'open', sessionForAcl);
       const plugin = (args['plugin'] as string | undefined) ?? this._imPluginName ?? getDefaultIMPluginName();
       const channelId = (args['channelId'] as string | undefined) ?? '';
       const threadId = (args['threadId'] as string | undefined) ?? '';

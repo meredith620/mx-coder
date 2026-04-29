@@ -118,6 +118,54 @@ describe('ApprovalManager — pending/state machine', () => {
     const states = mgr.getAllApprovalStates();
     expect(states.every(s => s.decision !== 'pending')).toBe(true);
   });
+  test('createPendingApproval 会把完整上下文写入 state.context', async () => {
+    const req = await mgr.createPendingApproval({
+      sessionId: 'sctx',
+      messageId: 'mctx',
+      toolUseId: 'tctx',
+      correlationId: 'corr-ctx',
+      capability: 'file_write',
+      operatorId: 'op-ctx',
+    });
+
+    const state = mgr.getApprovalState(req.requestId);
+    expect(state?.context.sessionId).toBe('sctx');
+    expect(state?.context.messageId).toBe('mctx');
+    expect(state?.context.toolUseId).toBe('tctx');
+    expect(state?.context.correlationId).toBe('corr-ctx');
+    expect(state?.context.capability).toBe('file_write');
+    expect(state?.context.operatorId).toBe('op-ctx');
+  });
+
+  test('新请求产生后，旧 requestId 不再是当前 pending', async () => {
+    const req1 = await mgr.createPendingApproval({ sessionId: 's1', messageId: 'm1', toolUseId: 't1' });
+    const req2 = await mgr.createPendingApproval({ sessionId: 's1', messageId: 'm2', toolUseId: 't2' });
+
+    expect(mgr.getPendingApprovalForSession('s1')?.requestId).toBe(req2.requestId);
+    expect(mgr.getApprovalState(req1.requestId)?.decision).toBe('cancelled');
+  });
+
+  test('被新请求取消的旧 requestId 再决策时返回 stale', async () => {
+    const req1 = await mgr.createPendingApproval({ sessionId: 's1', messageId: 'm1', toolUseId: 't1' });
+    await mgr.createPendingApproval({ sessionId: 's1', messageId: 'm2', toolUseId: 't2' });
+
+    const result = await mgr.decideByApprover(req1.requestId, 'approver-1', { decision: 'approved', scope: 'once' });
+    expect(result.status).toBe('stale');
+  });
+
+  test('cancelled request 不应继续作为 pending 返回', async () => {
+    const req = await mgr.createPendingApproval({ sessionId: 's-cancel', messageId: 'm1', toolUseId: 't1' });
+    await mgr.cancel(req.requestId, 'user_cancelled');
+
+    expect(mgr.getPendingApprovalForSession('s-cancel')).toBeUndefined();
+  });
+
+  test('expirePendingOnRestart 后 pending 查询应为空', async () => {
+    await mgr.createPendingApproval({ sessionId: 's-expire', messageId: 'm1', toolUseId: 't1' });
+    mgr.expirePendingOnRestart();
+
+    expect(mgr.getPendingApprovalForSession('s-expire')).toBeUndefined();
+  });
 });
 
 describe('ApprovalManager — first-write-wins', () => {
@@ -200,7 +248,7 @@ describe('ApprovalManager — takeover priority', () => {
   });
 
   test('approval_pending 收到 takeover 时先 cancel approval', async () => {
-    const req = await mgr.createPendingApproval({ sessionId: 's1', messageId: 'm1', toolUseId: 't1' });
+    const req = await mgr.createPendingApproval({ sessionId: 's1', messageId: 'm1', toolUseId: 't1', operatorId: 'operator-1' });
 
     await mgr.cancelForTakeover('s1');
 

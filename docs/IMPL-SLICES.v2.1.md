@@ -36,9 +36,9 @@
 - `mx-coder setup systemd` 已在 `docs/TODO.md` 列为未完成项
 
 ### 当前代码现状
-- 尚未发现 `//<cmd>` 路由实现：需要新增主链
-- 尚未发现 `setup systemd` CLI 子命令与实现
-- `docs/DEV-OPS.md` 已将 `mx-coder setup systemd --user` 正确标注为“尚未实现”；V5 只需在功能完成后收口运维指引与最终真值
+- passthrough 子链（V1→V2）已完成主链实现与测试收口
+- `setup systemd` 已具备 CLI 子命令、dry-run、user service 落盘与 install/status/uninstall 底层逻辑
+- `mx-coder setup systemd` 的 install/status/uninstall 统一 CLI 控制面已完成，尚待最终文档全面收口
 
 ---
 

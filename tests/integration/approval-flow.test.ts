@@ -203,4 +203,66 @@ describe('审批链路集成', () => {
     workerSocket.destroy();
   });
 
+  test('旧 requestId 在新审批产生后再决策时应视为 stale，且不覆盖当前 pending', async () => {
+    const request = (id: number) => JSON.stringify({
+      jsonrpc: '2.0',
+      id,
+      method: 'tools/call',
+      params: {
+        name: 'can_use_tool',
+        arguments: {
+          tool_name: 'Edit',
+          input: { path: `/tmp/${id}.txt` },
+          session_id: 'sess-stale',
+          message_id: `msg-${id}`,
+          tool_use_id: `tool-${id}`,
+          capability: 'file_write',
+          operator_id: 'user-stale',
+          correlation_id: `corr-${id}`,
+        },
+      },
+    });
+
+    const firstSocket = await new Promise<net.Socket>((resolve, reject) => {
+      const s = net.createConnection(socketPath);
+      s.on('connect', () => resolve(s));
+      s.on('error', reject);
+    });
+    const secondSocket = await new Promise<net.Socket>((resolve, reject) => {
+      const s = net.createConnection(socketPath);
+      s.on('connect', () => resolve(s));
+      s.on('error', reject);
+    });
+
+    let firstResponse = '';
+    let secondResponse = '';
+    firstSocket.on('data', chunk => { firstResponse += chunk.toString(); });
+    secondSocket.on('data', chunk => { secondResponse += chunk.toString(); });
+
+    firstSocket.write(request(20) + '\n');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const firstReq = mockIM.approvalRequests.at(-1)!;
+
+    secondSocket.write(request(21) + '\n');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const secondReq = mockIM.approvalRequests.at(-1)!;
+
+    expect(firstReq.requestId).not.toBe(secondReq.requestId);
+    expect(approvalMgr.getApprovalState(firstReq.requestId)?.decision).toBe('cancelled');
+    expect(approvalMgr.getPendingApprovalForSession('sess-stale')?.requestId).toBe(secondReq.requestId);
+
+    const staleResult = await approvalMgr.decideByApprover(firstReq.requestId, 'approver-1', { decision: 'approved', scope: 'once' });
+    expect(staleResult.status).toBe('stale');
+    expect(approvalMgr.getPendingApprovalForSession('sess-stale')?.requestId).toBe(secondReq.requestId);
+
+    await approvalMgr.decide(secondReq.requestId, { decision: 'approved', scope: 'once' });
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    expect(firstResponse).toContain('Cancelled by user');
+    expect(secondResponse).toContain('allow');
+
+    firstSocket.destroy();
+    secondSocket.destroy();
+  });
+
 });

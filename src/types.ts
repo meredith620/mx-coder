@@ -52,6 +52,7 @@ export interface QueuedMessage {
   replayOf?: string;
   approvalState?: 'pending' | 'approved' | 'denied' | 'expired' | 'cancelled';
   approvalScope?: 'once' | 'session';
+  isPassthrough?: boolean;
 }
 
 export type StreamVisibility = 'normal' | 'thinking' | 'verbose';
@@ -67,6 +68,10 @@ export interface Session {
   initState: InitState;
   runtimeState: RuntimeState;
   activeOperatorId?: string;
+  activeMessageId?: string;
+  lastTurnOutcome?: 'completed' | 'failed' | 'interrupted';
+  interruptReason?: 'takeover' | 'approval_timeout' | 'worker_crash' | 'daemon_restart';
+  lastResultAt?: string;
   takeoverRequestedBy?: string;
   takeoverRequestedAt?: string;
   needsRecovery?: boolean;

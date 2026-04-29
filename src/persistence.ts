@@ -1,7 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import type { Session, SessionStatus, RuntimeState } from './types.js';
+import type { Session, SessionStatus, RuntimeState, QueuedMessage } from './types.js';
 import type { SessionRegistry } from './session-registry.js';
+import { determineRestoreAction } from './restore-action.js';
 
 function deriveRuntimeStateFromStatus(status: SessionStatus): RuntimeState {
   switch (status) {
@@ -12,6 +13,41 @@ function deriveRuntimeStateFromStatus(status: SessionStatus): RuntimeState {
     case 'error':             return 'error';
     default:                  return 'cold';
   }
+}
+
+function deriveRestoreContext(message: QueuedMessage): { hasApprovalContext: boolean; isHighRisk: boolean } {
+  const approvalState = message.approvalState;
+  const hasApprovalContext = approvalState !== undefined && approvalState !== 'denied';
+  const content = message.content.toLowerCase();
+  const isHighRisk =
+    message.isPassthrough === true
+    || approvalState === 'denied'
+    || /\brm\s+-rf\b|\bmkfs\b|\bdd\s+if=|\bshutdown\b|\breboot\b|\bpoweroff\b|\biptables\b|\bsystemctl\s+stop\b|\bkillall\b|\bkill\s+-9\b/.test(content);
+  return { hasApprovalContext, isHighRisk };
+}
+
+function applyRestoreAction(message: QueuedMessage): QueuedMessage[] {
+  const restoreAction = determineRestoreAction(message, deriveRestoreContext(message));
+  if (restoreAction === 'replay') {
+    return [{ ...message, status: 'pending', restoreAction, replayOf: message.dedupeKey }];
+  }
+  return [{ ...message, status: 'pending', restoreAction }];
+}
+
+function toAuditRecord(message: QueuedMessage): AuditRecord | null {
+  if (!message.restoreAction) return null;
+  return {
+    dedupeKey: message.dedupeKey,
+    replayOf: message.restoreAction === 'replay' ? message.replayOf ?? message.dedupeKey : null,
+    requestId: null,
+    operatorId: message.userId || null,
+    action: message.restoreAction === 'replay'
+      ? 'restore_replay'
+      : message.restoreAction === 'confirm'
+        ? 'restore_confirm'
+        : 'restore_discard',
+    result: 'scheduled',
+  };
 }
 
 // States that cannot survive a daemon restart cleanly
@@ -46,9 +82,19 @@ interface PersistenceFile {
   sessions: PersistedSession[];
 }
 
+type AuditRecord = {
+  dedupeKey: string | null;
+  replayOf: string | null;
+  requestId: string | null;
+  operatorId: string | null;
+  action: 'restore_replay' | 'restore_confirm' | 'restore_discard';
+  result: 'scheduled';
+};
+
 export class PersistenceStore {
   private _filePath: string;
   private _registry: SessionRegistry | null = null;
+  private _auditRecords: AuditRecord[] = [];
 
   constructor(filePath: string) {
     this._filePath = filePath;
@@ -56,6 +102,10 @@ export class PersistenceStore {
 
   attach(registry: SessionRegistry): void {
     this._registry = registry;
+  }
+
+  getAuditRecords(): AuditRecord[] {
+    return [...this._auditRecords];
   }
 
   async load(registry: SessionRegistry): Promise<void> {
@@ -79,15 +129,20 @@ export class PersistenceStore {
       const needsRecovery = persistedStatus === 'recovering' || recoveredReason !== undefined;
       const status: SessionStatus = needsRecovery ? 'idle' : (persistedStatus as SessionStatus);
       const runtimeState: RuntimeState = status === 'idle' ? 'cold' : deriveRuntimeStateFromStatus(status);
-      const messageQueue: Session['messageQueue'] = (p.messageQueue ?? []).map((message) => {
-        if (!needsRecovery) return message;
-        if (message.status === 'running' || message.status === 'waiting_approval') {
-          return message.status === 'waiting_approval'
-            ? { ...message, status: 'pending', approvalState: 'expired' }
-            : { ...message, status: 'pending' };
+      const messageQueue: Session['messageQueue'] = (p.messageQueue ?? []).flatMap((message) => {
+        if (!needsRecovery) return [message];
+        if (message.status === 'running') {
+          return applyRestoreAction({ ...message, status: 'running' });
         }
-        return message;
+        if (message.status === 'waiting_approval') {
+          return applyRestoreAction({ ...message, status: 'waiting_approval', approvalState: message.approvalState === 'denied' ? 'denied' : 'expired' });
+        }
+        return [message];
       });
+      for (const message of messageQueue) {
+        const audit = toAuditRecord(message);
+        if (audit) this._auditRecords.push(audit);
+      }
 
       const session: Session = {
         name: p.name,
