@@ -265,4 +265,53 @@ describe('审批链路集成', () => {
     secondSocket.destroy();
   });
 
+  test('审批请求默认可无限等待，不会因超时自动过期', async () => {
+    await handler.close();
+    approvalMgr = new ApprovalManager({
+      autoAllowCapabilities: [],
+      autoAskCapabilities: ['file_write'],
+      autoDenyCapabilities: ['shell_dangerous'],
+      autoDenyPatterns: [],
+      timeoutSeconds: 0,
+    });
+    handler = new ApprovalHandler({
+      socketPath,
+      approvalManager: approvalMgr,
+      imPlugin: mockIM,
+      imTarget: { plugin: 'mock', threadId: 'thread-1' },
+    });
+    await handler.listen();
+
+    const req = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 99,
+      method: 'tools/call',
+      params: {
+        name: 'can_use_tool',
+        arguments: {
+          tool_name: 'Edit',
+          tool_input: { path: '/tmp/infinite.txt' },
+          session_id: 'sess-infinite',
+          message_id: 'msg-infinite',
+          tool_use_id: 'tool-infinite',
+          capability: 'file_write',
+          operator_id: 'user-1',
+        },
+      },
+    });
+
+    const workerSocket = await new Promise<net.Socket>((resolve, reject) => {
+      const s = net.createConnection(socketPath);
+      s.on('connect', () => resolve(s));
+      s.on('error', reject);
+    });
+
+    workerSocket.write(req + '\n');
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    const pending = approvalMgr.getPendingApprovalForSession('sess-infinite');
+    expect(pending?.decision).toBe('pending');
+    workerSocket.destroy();
+  });
+
 });

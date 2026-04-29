@@ -173,14 +173,17 @@ export class ApprovalManager {
     this._states.set(requestId, state);
     this._mutexes.set(requestId, makeMutex());
 
-    const timeoutMs = (opts?.timeoutSeconds ?? this._config.timeoutSeconds) * 1000;
-    setTimeout(() => {
-      const s = this._states.get(requestId);
-      if (s && !s._decided) {
-        s.decision = 'expired';
-        s._decided = true;
-      }
-    }, timeoutMs);
+    const timeoutSeconds = opts?.timeoutSeconds ?? this._config.timeoutSeconds;
+    if (Number.isFinite(timeoutSeconds) && timeoutSeconds > 0) {
+      const timeoutMs = timeoutSeconds * 1000;
+      setTimeout(() => {
+        const s = this._states.get(requestId);
+        if (s && !s._decided) {
+          s.decision = 'expired';
+          s._decided = true;
+        }
+      }, timeoutMs);
+    }
 
     return {
       requestId,

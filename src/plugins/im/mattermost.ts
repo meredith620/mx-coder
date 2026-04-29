@@ -339,13 +339,12 @@ export class MattermostPlugin implements IMPlugin {
       `风险：${request.riskLevel}　能力：${request.capability}`,
       request.toolInputSummary,
       '',
-      '请直接对本消息添加 reaction：',
-      '👍 Yes, once',
-      '✅ Yes, for this session',
-      '👎 No',
-      '⏹️ Cancel',
-      '',
-      'fallback：`/approve once` ` /approve session` ` /deny` ` /cancel`',
+      '| 选项 | Emoji | Fallback |',
+      '|---|---|---|',
+      '| approve once | 👍 | `/approve once` |',
+      '| approve session | ✅ | `/approve session` |',
+      '| deny | 👎 | `/deny` |',
+      '| cancel | ⏹️ | `/cancel` |',
     ].join('\n');
   }
 
@@ -711,7 +710,7 @@ export class MattermostPlugin implements IMPlugin {
         props: {
           attachments: [{
             title: `Tool: ${request.toolName}`,
-            text: `风险：${request.riskLevel}　能力：${request.capability}\n${request.toolInputSummary}`,
+            text: message,
             color: request.riskLevel === 'high' ? '#FF0000' : request.riskLevel === 'medium' ? '#FFA500' : '#00FF00',
           }],
         },

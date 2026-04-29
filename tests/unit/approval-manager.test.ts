@@ -110,6 +110,16 @@ describe('ApprovalManager — pending/state machine', () => {
     expect(result.status).toBe('stale');
   });
 
+  test('timeoutSeconds<=0 时 pending 审批不会自动过期', async () => {
+    vi.useFakeTimers();
+    const req = await mgr.createPendingApproval(
+      { sessionId: 'sess-infinite', messageId: 'msg1', toolUseId: 'tool1' },
+      { timeoutSeconds: 0 },
+    );
+    vi.advanceTimersByTime(60_000);
+    expect(mgr.getApprovalState(req.requestId)?.decision).toBe('pending');
+  });
+
   test('expirePendingOnRestart 批量 expire 所有 pending', async () => {
     await mgr.createPendingApproval({ sessionId: 's1', messageId: 'm1', toolUseId: 't1' });
     await mgr.createPendingApproval({ sessionId: 's2', messageId: 'm2', toolUseId: 't2' });

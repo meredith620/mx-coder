@@ -624,6 +624,51 @@ describe('MattermostPlugin', () => {
     expect(body.channel_id).toBe('ch-typing');
     expect(body.parent_id).toBe('root1');
   });
+  test('requestApproval 使用表格化授权提示并预置 reaction', async () => {
+    const plugin = new MattermostPlugin({ url: BASE_URL, token: TOKEN, channelId: CHANNEL_ID });
+    fetchSpy = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        json: async () => ({ id: 'approval-post-1' }),
+        text: async () => '',
+      })
+      .mockResolvedValue({
+        ok: true,
+        status: 201,
+        json: async () => ({}),
+        text: async () => '',
+      });
+    vi.stubGlobal('fetch', fetchSpy);
+    (plugin as any)._botUserId = 'bot-u1';
+
+    await plugin.requestApproval({ plugin: 'mattermost', threadId: 'root1' }, {
+      requestId: 'req1',
+      sessionName: 'sess1',
+      messageId: 'msg1',
+      toolName: 'bash',
+      toolInputSummary: 'ls -la',
+      riskLevel: 'low',
+      capability: 'bash',
+      scopeOptions: ['once', 'session'],
+      timeoutSeconds: 60,
+    } as any);
+
+    const [url, opts] = fetchSpy.mock.calls[0];
+    expect(url).toBe(`${BASE_URL}/api/v4/posts`);
+    const body = JSON.parse(opts.body);
+    expect(body.props?.attachments).toBeDefined();
+    const attachmentText = JSON.stringify(body.props.attachments);
+    expect(attachmentText).toContain('approve once');
+    expect(attachmentText).toContain('approve session');
+    expect(attachmentText).toContain('/approve once');
+    expect(attachmentText).toContain('/approve session');
+    expect(attachmentText).toContain('👍');
+    expect(attachmentText).toContain('✅');
+    expect(attachmentText).toContain('👎');
+    expect(attachmentText).toContain('⏹️');
+  });
+
   test('requestApproval 发送带 attachments 的消息并预置 reaction', async () => {
     const plugin = new MattermostPlugin({ url: BASE_URL, token: TOKEN, channelId: CHANNEL_ID });
     fetchSpy = vi.fn()
