@@ -9,7 +9,7 @@ import { ApprovalHandler } from './approval-handler.js';
 import { getIMPluginFactory, getDefaultIMPluginName } from './plugins/im/registry.js';
 import { getCLIPlugin, getDefaultCLIPluginName } from './plugins/cli/registry.js';
 import type { IMPlugin } from './plugins/types.js';
-import type { IncomingMessage, MessageTarget, Session, StreamVisibility } from './types.js';
+import type { IncomingMessage, MessageTarget, MessageContent, Session, StreamVisibility } from './types.js';
 import type { AclAction, Actor } from './acl-manager.js';
 import type { ErrorCode } from './ipc/codec.js';
 import { randomUUID } from 'crypto';
@@ -219,6 +219,40 @@ export class Daemon {
           }
         }
       }
+    }
+
+    // Validate session bindings - check if channel bindings are still valid
+    await this._validateSessionBindings();
+  }
+
+  private async _validateSessionBindings(): Promise<void> {
+    if (!this._imPlugin || !('checkChannelStatus' in this._imPlugin)) return;
+
+    const checkChannelStatus = this._imPlugin.checkChannelStatus?.bind(this._imPlugin);
+    if (!checkChannelStatus) return;
+
+    let hasStaleBindings = false;
+    for (const session of this.registry.list()) {
+      for (const binding of session.imBindings) {
+        if (binding.bindingKind === 'channel' && binding.channelId) {
+          const status = await checkChannelStatus(binding.channelId);
+          if (!status.valid) {
+            if (status.deleted) {
+              console.warn(`[Daemon] Session '${session.name}' has binding to deleted channel ${binding.channelId}, removing binding`);
+              // Remove the stale binding
+              const idx = session.imBindings.indexOf(binding);
+              if (idx >= 0) {
+                session.imBindings.splice(idx, 1);
+                hasStaleBindings = true;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (hasStaleBindings && this._store) {
+      await this._store.flush();
     }
   }
 
@@ -680,6 +714,38 @@ if (trimmed === '/help') {
       threadId: msg.isTopLevel ? '' : msg.threadId,
       userId: msg.userId,
     };
+  }
+
+  /**
+   * Send a message with graceful error handling for deleted channels.
+   * Returns true if sent successfully, false if failed (e.g., channel deleted).
+   */
+  private async _safeSendMessage(target: MessageTarget, content: MessageContent): Promise<boolean> {
+    const imPlugin = this._getIMPlugin(target.plugin);
+    if (!imPlugin) return false;
+
+    try {
+      await imPlugin.sendMessage(target, content);
+      return true;
+    } catch (err) {
+      const errorMsg = (err as Error).message;
+      // Check if this is a "deleted channel" error
+      if (errorMsg.includes('deleted') || errorMsg.includes('can_not_post_to_deleted')) {
+        this._debugLog({
+          event: 'send_message_failed_deleted_channel',
+          target,
+          error: errorMsg,
+        });
+        return false;
+      }
+      // For other errors, still log and return false
+      this._debugLog({
+        event: 'send_message_failed',
+        target,
+        error: errorMsg,
+      });
+      return false;
+    }
   }
 
   private _renderIMStatus(msg: IncomingMessage): string {

@@ -256,11 +256,16 @@ export class MattermostPlugin implements IMPlugin {
     this._stopped = false;
     this._startWebSocket();
 
-    // Send welcome message
-    await this.sendMessage(
-      { plugin: 'mattermost', channelId: this._config.channelId, threadId: '' },
-      { kind: 'text', text: getMattermostWelcomeText(me.username, opts.sessionCount ?? 0, opts.activeCount ?? 0) },
-    );
+    // Send welcome message (non-fatal if it fails, e.g. channel was deleted)
+    try {
+      await this.sendMessage(
+        { plugin: 'mattermost', channelId: this._config.channelId, threadId: '' },
+        { kind: 'text', text: getMattermostWelcomeText(me.username, opts.sessionCount ?? 0, opts.activeCount ?? 0) },
+      );
+    } catch (err) {
+      // Log warning but don't fail - the channel might be deleted or inaccessible
+      console.warn(`[Mattermost] Failed to send welcome message to channel ${this._config.channelId}: ${(err as Error).message}`);
+    }
   }
 
   /** Graceful shutdown: stop WebSocket reconnect loop and close connection */
@@ -375,6 +380,22 @@ export class MattermostPlugin implements IMPlugin {
   private async _apiGet<T>(path: string): Promise<T> {
     const res = await this._apiRequest(path, { method: 'GET' });
     return res.json() as Promise<T>;
+  }
+
+  /**
+   * Check if a channel exists and is not deleted.
+   * Returns null if the channel is valid, or an object with error info if not.
+   */
+  async checkChannelStatus(channelId: string): Promise<{ valid: true } | { valid: false; error: string; deleted?: boolean }> {
+    try {
+      const channel = await this._apiGet<{ id: string; delete_at: number }>(`/api/v4/channels/${channelId}`);
+      if (channel.delete_at > 0) {
+        return { valid: false, error: 'Channel has been deleted', deleted: true };
+      }
+      return { valid: true };
+    } catch (err) {
+      return { valid: false, error: (err as Error).message };
+    }
   }
 
   /** Start WebSocket connection to receive real-time events */

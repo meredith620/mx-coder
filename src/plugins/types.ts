@@ -79,6 +79,12 @@ export interface IMPlugin {
   sendTyping?(target: MessageTarget): Promise<void>;
 
   /**
+   * Check if a channel is valid (exists and not deleted)
+   * Returns { valid: true } or { valid: false, error: string, deleted?: boolean }
+   */
+  checkChannelStatus?(channelId: string): Promise<{ valid: true } | { valid: false; error: string; deleted?: boolean }>;
+
+  /**
    * Graceful shutdown — close connections and release resources
    */
   disconnect?(): Promise<void>;
