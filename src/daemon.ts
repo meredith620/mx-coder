@@ -8,8 +8,8 @@ import { ApprovalManager } from './approval-manager.js';
 import { ApprovalHandler } from './approval-handler.js';
 import { getIMPluginFactory, getDefaultIMPluginName } from './plugins/im/registry.js';
 import { getCLIPlugin, getDefaultCLIPluginName } from './plugins/cli/registry.js';
-import type { IMPlugin } from './plugins/types.js';
-import type { IncomingMessage, MessageTarget, MessageContent, Session, StreamVisibility } from './types.js';
+import type { IMPlugin, ChannelStatusResult } from './plugins/types.js';
+import type { IncomingMessage, MessageTarget, Session, StreamVisibility } from './types.js';
 import type { AclAction, Actor } from './acl-manager.js';
 import type { ErrorCode } from './ipc/codec.js';
 import { randomUUID } from 'crypto';
@@ -140,6 +140,18 @@ export class Daemon {
         plugin: this._imPluginName ?? getDefaultIMPluginName(),
         threadId: '',
       },
+      onInvalidTarget: async (sessionId, target, status) => {
+        if (!target.channelId) return;
+        const session = this.registry.list().find((item) => item.sessionId === sessionId);
+        if (!session) return;
+        this.registry.removeIMBinding(session.name, (binding) =>
+          binding.plugin === target.plugin
+          && binding.bindingKind === 'channel'
+          && binding.channelId === target.channelId,
+        );
+        if (this._store) await this._store.flush();
+        this._debugLog({ event: 'approval_target_invalid', sessionId, sessionName: session.name, channelId: target.channelId, status: status.kind });
+      },
       resolveContext: (sessionId: string) => {
         const session = this.registry.list().find((item) => item.sessionId === sessionId);
         if (!session) return undefined;
@@ -233,20 +245,36 @@ export class Daemon {
 
     let hasStaleBindings = false;
     for (const session of this.registry.list()) {
-      for (const binding of session.imBindings) {
-        if (binding.bindingKind === 'channel' && binding.channelId) {
-          const status = await checkChannelStatus(binding.channelId);
-          if (!status.valid) {
-            if (status.deleted) {
-              console.warn(`[Daemon] Session '${session.name}' has binding to deleted channel ${binding.channelId}, removing binding`);
-              // Remove the stale binding
-              const idx = session.imBindings.indexOf(binding);
-              if (idx >= 0) {
-                session.imBindings.splice(idx, 1);
-                hasStaleBindings = true;
-              }
-            }
-          }
+      for (const binding of [...session.imBindings]) {
+        if (binding.bindingKind !== 'channel' || !binding.channelId) {
+          continue;
+        }
+
+        const status = await checkChannelStatus(binding.channelId);
+        if (status.kind === 'ok') {
+          continue;
+        }
+
+        const shouldRemove = status.kind === 'deleted' || status.kind === 'not_found' || status.kind === 'forbidden';
+        if (!shouldRemove) {
+          this._debugLog({
+            event: 'im_binding_validation_failed',
+            sessionName: session.name,
+            channelId: binding.channelId,
+            status: status.kind,
+            error: status.error,
+          });
+          continue;
+        }
+
+        console.warn(`[Daemon] Session '${session.name}' has stale channel binding ${binding.channelId} (${status.kind}), removing binding`);
+        if (this.registry.removeIMBinding(session.name, (candidate) =>
+          candidate.plugin === binding.plugin
+          && candidate.bindingKind === binding.bindingKind
+          && candidate.threadId === binding.threadId
+          && candidate.channelId === binding.channelId,
+        )) {
+          hasStaleBindings = true;
         }
       }
     }
@@ -407,7 +435,7 @@ export class Daemon {
       return;
     }
 
-if (trimmed === '/help') {
+    if (trimmed === '/help') {
       // Try to get session bound to this message to show CLI-specific commands
       const boundSession = this._resolveBoundSession(msg);
       let cliPluginName: string | undefined;
@@ -714,38 +742,6 @@ if (trimmed === '/help') {
       threadId: msg.isTopLevel ? '' : msg.threadId,
       userId: msg.userId,
     };
-  }
-
-  /**
-   * Send a message with graceful error handling for deleted channels.
-   * Returns true if sent successfully, false if failed (e.g., channel deleted).
-   */
-  private async _safeSendMessage(target: MessageTarget, content: MessageContent): Promise<boolean> {
-    const imPlugin = this._getIMPlugin(target.plugin);
-    if (!imPlugin) return false;
-
-    try {
-      await imPlugin.sendMessage(target, content);
-      return true;
-    } catch (err) {
-      const errorMsg = (err as Error).message;
-      // Check if this is a "deleted channel" error
-      if (errorMsg.includes('deleted') || errorMsg.includes('can_not_post_to_deleted')) {
-        this._debugLog({
-          event: 'send_message_failed_deleted_channel',
-          target,
-          error: errorMsg,
-        });
-        return false;
-      }
-      // For other errors, still log and return false
-      this._debugLog({
-        event: 'send_message_failed',
-        target,
-        error: errorMsg,
-      });
-      return false;
-    }
   }
 
   private _renderIMStatus(msg: IncomingMessage): string {
@@ -1061,8 +1057,12 @@ if (trimmed === '/help') {
         return;
       } catch (err) {
         console.error(`[/open] Failed to send to existing ${binding.bindingKind} ${binding.bindingKind === 'channel' ? binding.channelId : binding.threadId}, removing stale binding: ${(err as Error).message}`);
-        const idx = session.imBindings.indexOf(binding);
-        if (idx >= 0) session.imBindings.splice(idx, 1);
+        this.registry.removeIMBinding(sessionName, (candidate) =>
+          candidate.plugin === binding.plugin
+          && candidate.bindingKind === binding.bindingKind
+          && candidate.threadId === binding.threadId
+          && candidate.channelId === binding.channelId,
+        );
         if (this._store) void this._store.flush();
       }
     }

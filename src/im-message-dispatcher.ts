@@ -1,7 +1,7 @@
 import * as readline from 'readline';
 import type { ChildProcess } from 'child_process';
 import type { SessionRegistry } from './session-registry.js';
-import type { IMPlugin } from './plugins/types.js';
+import type { IMPlugin, ChannelStatusResult } from './plugins/types.js';
 import type { MessageTarget, QueuedMessage, Session, StreamCursor } from './types.js';
 import { StreamToIM } from './stream-to-im.js';
 import { IMWorkerManager } from './im-worker-manager.js';
@@ -107,6 +107,28 @@ export class IMMessageDispatcher {
     const message = session.messageQueue.find(m => m.status === 'pending');
     if (!message) return null;
     return { session, message };
+  }
+
+  private async _handleInvalidTarget(sessionName: string, target: MessageTarget, status: ChannelStatusResult): Promise<void> {
+    if (!target.channelId) return;
+
+    const session = this._opts.registry.get(sessionName);
+    if (!session) return;
+
+    const shouldRemove = status.kind === 'deleted' || status.kind === 'not_found' || status.kind === 'forbidden';
+    if (!shouldRemove) {
+      debugLog({ event: 'invalid_target_ignored', sessionName, channelId: target.channelId, status: status.kind, error: 'error' in status ? status.error : undefined });
+      return;
+    }
+
+    const removed = this._opts.registry.removeIMBinding(sessionName, (binding) =>
+      binding.plugin === target.plugin
+      && binding.bindingKind === 'channel'
+      && binding.channelId === target.channelId,
+    );
+    if (removed) {
+      debugLog({ event: 'invalid_target_binding_removed', sessionName, channelId: target.channelId, status: status.kind });
+    }
   }
 
   private _buildTarget(message: QueuedMessage): MessageTarget {
@@ -285,7 +307,15 @@ export class IMMessageDispatcher {
     if (!next) return;
 
     const { session, message } = next;
-    const streamToIM = new StreamToIM(this._resolveIMPlugin(message, session), this._buildTarget(message), session.streamVisibility);
+    const target = this._buildTarget(message);
+    const streamToIM = new StreamToIM(
+      this._resolveIMPlugin(message, session),
+      target,
+      session.streamVisibility,
+      async (invalidTarget, status) => {
+        await this._handleInvalidTarget(sessionName, invalidTarget, status);
+      },
+    );
     const wasUninitialized = session.initState === 'uninitialized';
 
     debugLog({

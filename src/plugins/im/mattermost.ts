@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import type { IMPlugin } from '../types.js';
+import type { IMPlugin, ChannelStatusResult } from '../types.js';
 import type { MessageTarget, MessageContent, IncomingMessage, ApprovalRequest, IMConfigGuide } from '../../types.js';
 
 export interface MattermostConfig {
@@ -386,15 +386,22 @@ export class MattermostPlugin implements IMPlugin {
    * Check if a channel exists and is not deleted.
    * Returns null if the channel is valid, or an object with error info if not.
    */
-  async checkChannelStatus(channelId: string): Promise<{ valid: true } | { valid: false; error: string; deleted?: boolean }> {
+  async checkChannelStatus(channelId: string): Promise<ChannelStatusResult> {
     try {
       const channel = await this._apiGet<{ id: string; delete_at: number }>(`/api/v4/channels/${channelId}`);
       if (channel.delete_at > 0) {
-        return { valid: false, error: 'Channel has been deleted', deleted: true };
+        return { kind: 'deleted', error: 'Channel has been deleted' };
       }
-      return { valid: true };
+      return { kind: 'ok' };
     } catch (err) {
-      return { valid: false, error: (err as Error).message };
+      const error = (err as Error).message;
+      if (error.includes(' 403:')) {
+        return { kind: 'forbidden', error };
+      }
+      if (error.includes(' 404:')) {
+        return { kind: 'not_found', error };
+      }
+      return { kind: 'unknown_error', error };
     }
   }
 

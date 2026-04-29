@@ -30,6 +30,13 @@ export function hasLegacyIMMessageCommand(plugin: CLIPlugin): plugin is LegacyIM
   return 'buildIMMessageCommand' in plugin && typeof (plugin as LegacyIMMessageCLIPlugin).buildIMMessageCommand === 'function';
 }
 
+export type ChannelStatusResult =
+  | { kind: 'ok' }
+  | { kind: 'deleted'; error: string }
+  | { kind: 'forbidden'; error: string }
+  | { kind: 'not_found'; error: string }
+  | { kind: 'unknown_error'; error: string };
+
 export interface IMPlugin {
   /**
    * Register a callback to receive incoming messages from the IM platform
@@ -80,9 +87,8 @@ export interface IMPlugin {
 
   /**
    * Check if a channel is valid (exists and not deleted)
-   * Returns { valid: true } or { valid: false, error: string, deleted?: boolean }
    */
-  checkChannelStatus?(channelId: string): Promise<{ valid: true } | { valid: false; error: string; deleted?: boolean }>;
+  checkChannelStatus?(channelId: string): Promise<ChannelStatusResult>;
 
   /**
    * Graceful shutdown — close connections and release resources

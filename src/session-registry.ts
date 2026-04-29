@@ -349,6 +349,21 @@ export class SessionRegistry {
       createdAt: new Date().toISOString(),
     };
     s.imBindings.push(entry);
+    s.revision += 1;
+    s.lastActivityAt = new Date();
+  }
+
+  removeIMBinding(name: string, predicate: (binding: IMBinding) => boolean): boolean {
+    const s = this._getOrThrow(name);
+    const before = s.imBindings.length;
+    s.imBindings = s.imBindings.filter((binding) => !predicate(binding));
+    if (s.imBindings.length !== before) {
+      s.revision += 1;
+      s.lastActivityAt = new Date();
+      debugLog({ event: 'im_binding_removed', sessionName: s.name, removed: before - s.imBindings.length, revision: s.revision });
+      return true;
+    }
+    return false;
   }
 
   getByIMThread(plugin: string, threadId: string): Session | undefined {

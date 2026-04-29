@@ -2,7 +2,7 @@ import * as net from 'net';
 import * as fs from 'fs';
 import * as readline from 'readline';
 import type { ApprovalManager } from './approval-manager.js';
-import type { IMPlugin } from './plugins/types.js';
+import type { IMPlugin, ChannelStatusResult } from './plugins/types.js';
 import type { MessageTarget, Capability } from './types.js';
 
 interface PermissionResultPayload {
@@ -23,6 +23,7 @@ export interface ApprovalHandlerOptions {
   imPlugin: IMPlugin;
   imTarget: MessageTarget;
   resolveContext?: (sessionId: string) => { target: MessageTarget; sessionName: string; operatorId?: string; message?: { approvalState?: 'pending' | 'approved' | 'denied' | 'expired' | 'cancelled'; approvalScope?: 'once' | 'session' } } | undefined;
+  onInvalidTarget?: (sessionId: string, target: MessageTarget, status: ChannelStatusResult) => Promise<void>;
 }
 
 interface JsonRPCRequest {
@@ -194,6 +195,14 @@ export class ApprovalHandler {
           capability: capability ?? 'file_write',
           scopeOptions: ['once', 'session'],
           timeoutSeconds: 60,
+        }).catch(async (err) => {
+          if (target.channelId && this._opts.imPlugin.checkChannelStatus && this._opts.onInvalidTarget) {
+            const status = await this._opts.imPlugin.checkChannelStatus(target.channelId);
+            if (status.kind === 'deleted' || status.kind === 'not_found' || status.kind === 'forbidden') {
+              await this._opts.onInvalidTarget(sessionId, target, status);
+            }
+          }
+          throw err;
         });
         if (interactionMessageId) {
           this._opts.approvalManager.attachInteractionMessage(created.requestId, interactionMessageId);
