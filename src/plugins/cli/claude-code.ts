@@ -44,10 +44,33 @@ export function readClaudePermissionMode(workdir: string, sessionId: string): 'd
   return undefined;
 }
 
+/**
+ * Native commands supported by Claude Code in pipe mode (-p).
+ * These can be triggered via mx-coder passthrough (//<cmd> syntax).
+ */
+const SUPPORTED_NATIVE_COMMANDS = [
+  '/cost',      // Session cost statistics
+  '/context',   // Token usage statistics
+  '/batch',     // Batch operations
+  '/loop',      // Loop execution
+  '/review',    // Code review
+  '/init',      // Initialize CLAUDE.md
+  '/debug',     // Debug mode
+  '/insights',  // Session insights
+  '/simplify',  // Simplify code (skill)
+  '/claude-api', // Claude API reference (skill)
+] as const;
+
 export class ClaudeCodePlugin implements CLIPlugin {
+  readonly name = 'claude-code';
+
+  getSupportedNativeCommands(): string[] {
+    return [...SUPPORTED_NATIVE_COMMANDS];
+  }
+
   /**
    * 真实恢复依据不是 initState，而是 Claude 本地 session 文件是否存在。
-   * 这样可覆盖“打开 TUI 但未产生任何可恢复对话”这类场景。
+   * 这样可覆盖”打开 TUI 但未产生任何可恢复对话”这类场景。
    */
   private _resumeArgs(session: Session): string[] {
     if (hasClaudeSession(session.workdir, session.sessionId)) {

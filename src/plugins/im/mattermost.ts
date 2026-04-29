@@ -141,8 +141,8 @@ export function loadMattermostConfig(configPath = getDefaultMattermostConfigPath
   };
 }
 
-export function getMattermostCommandHelpText(): string {
-  return [
+export function getMattermostCommandHelpText(cliPluginName?: string, supportedNativeCommands?: string[]): string {
+  const lines = [
     '**mx-coder 可用命令**：',
     '',
     '`/help` — 显示本帮助',
@@ -153,9 +153,28 @@ export function getMattermostCommandHelpText(): string {
     '`/takeover <sessionName>` — 请求接管当前被终端占用的会话',
     '`/takeover-force <sessionName>` — 立即强制接管当前被终端占用的会话',
     '',
+  ];
+
+  // Add CLI-specific passthrough commands
+  if (supportedNativeCommands && supportedNativeCommands.length > 0) {
+    const cliLabel = cliPluginName ? `**${cliPluginName}** 原生命令` : 'Claude Code 原生命令';
+    lines.push(`${cliLabel}（使用 \`//<cmd>\` 透传）：`);
+    // Format commands in rows of 3 for readability
+    const cmdRows: string[] = [];
+    for (let i = 0; i < supportedNativeCommands.length; i += 3) {
+      const row = supportedNativeCommands.slice(i, i + 3).map(c => `\`${c}\``).join('  ');
+      cmdRows.push(row);
+    }
+    lines.push(...cmdRows);
+    lines.push('');
+  }
+
+  lines.push(
     '在 thread 或 session channel 中发送普通文本消息将交给 Claude 处理。若会话正被终端占用，消息会被拒绝并提示使用 takeover。',
     '`/remove`、`/attach`、`/create` 等 session 管理命令请在 CLI 中使用。',
-  ].join('\n');
+  );
+
+  return lines.join('\n');
 }
 
 export function getMattermostWelcomeText(username: string, sessionCount: number, activeCount: number): string {

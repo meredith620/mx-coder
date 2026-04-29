@@ -15,7 +15,7 @@ export interface IMPluginFactory {
   getDefaultConfigPath(): string;
   writeConfigTemplate(configPath: string): void;
   verifyConnection(configPath?: string): Promise<{ ok: true; config: unknown; botUserId: string }>;
-  getCommandHelpText(): string;
+  getCommandHelpText(cliPluginName?: string, supportedNativeCommands?: string[]): string;
 }
 
 const IM_PLUGINS: Record<string, IMPluginFactory> = {

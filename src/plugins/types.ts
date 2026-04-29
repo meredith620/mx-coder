@@ -9,6 +9,17 @@ export interface CLIPlugin {
   buildAttachCommand(session: Session): CommandSpec;
   buildIMWorkerCommand(session: Session, bridgeScriptPath: string): CommandSpec;
   generateSessionId(): string;
+
+  /**
+   * Get the name of this CLI plugin (e.g., "claude-code")
+   */
+  readonly name: string;
+
+  /**
+   * Get supported native commands in pipe mode
+   * Returns array of command names that work with // prefix passthrough
+   */
+  getSupportedNativeCommands(): string[];
 }
 
 export interface LegacyIMMessageCLIPlugin extends CLIPlugin {

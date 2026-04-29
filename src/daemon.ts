@@ -373,10 +373,20 @@ export class Daemon {
       return;
     }
 
-    if (trimmed === '/help') {
+if (trimmed === '/help') {
+      // Try to get session bound to this message to show CLI-specific commands
+      const boundSession = this._resolveBoundSession(msg);
+      let cliPluginName: string | undefined;
+      let supportedNativeCommands: string[] | undefined;
+
+      if (boundSession) {
+        cliPluginName = boundSession.cliPlugin;
+        supportedNativeCommands = this._getCLISupportedNativeCommands(boundSession);
+      }
+
       await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
         kind: 'text',
-        text: factory.getCommandHelpText(),
+        text: factory.getCommandHelpText(cliPluginName, supportedNativeCommands),
       });
       return;
     }
@@ -690,6 +700,15 @@ export class Daemon {
       binding.plugin === msg.plugin
       && (binding.bindingKind === 'channel' ? binding.channelId === (msg.channelId ?? '') : binding.threadId === msg.threadId),
     ));
+  }
+
+  private _getCLISupportedNativeCommands(session: Session): string[] {
+    try {
+      const cliPlugin = getCLIPlugin(session.cliPlugin);
+      return cliPlugin.getSupportedNativeCommands();
+    } catch {
+      return [];
+    }
   }
 
   private async _handleStreamCommand(trimmed: string, channelId: string, msg: IncomingMessage): Promise<void> {
