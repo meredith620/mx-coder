@@ -12,6 +12,7 @@ import { getCLIPlugin, getDefaultCLIPluginName } from './plugins/cli/registry.js
 import { getClaudeSessionPath, hasClaudeSession } from './plugins/cli/claude-code.js';
 import { getIMPluginFactory, getDefaultIMPluginName } from './plugins/im/registry.js';
 import { renderUserServiceUnit, writeUserServiceUnit, installUserService, getUserServiceStatus, uninstallUserService } from './systemd.js';
+import { createTuiStateStore, renderTuiOverview } from './tui.js';
 import type { Session } from './types.js';
 
 const SOCKET_PATH = process.env.MX_CODER_SOCKET ?? path.join(os.tmpdir(), 'mx-coder-daemon.sock');
@@ -167,8 +168,7 @@ async function main() {
         await handleIm(parsed.subcommand!, parsed.args);
         break;
       case 'tui':
-        console.error('tui: not yet implemented');
-        process.exit(1);
+        await handleTui();
         break;
       default:
         console.error(`Unknown command: ${parsed.command}`);
@@ -869,6 +869,31 @@ async function handleRemove(args: Record<string, string | undefined>) {
   }
 
   console.log(`Session '${name}' removed`);
+}
+
+async function handleTui() {
+  const client = new IPCClient(SOCKET_PATH);
+  await client.connect();
+  const res = await client.send('status', {});
+  await client.close();
+
+  if (!res.ok) {
+    throw new Error(`Failed to get status: ${res.error!.message}`);
+  }
+
+  const sessions = (res.data!.sessions as Array<Record<string, unknown>>).map((session) => ({
+    name: String(session.name),
+    status: session.status as Session['status'],
+    runtimeState: session.runtimeState as Session['runtimeState'],
+    workdir: String(session.workdir ?? ''),
+    queueLength: Array.isArray(session.messageQueue) ? session.messageQueue.length : 0,
+    lastActivityAt: new Date(String(session.lastActivityAt ?? Date.now())),
+    bindingKind: (session.imBindings as Array<Record<string, unknown>> | undefined)?.[0]?.bindingKind as 'thread' | 'channel' | undefined,
+    connectionHealth: session.connectionHealth as { wsHealthy?: boolean; subscriptionHealthy?: boolean } | undefined,
+  }));
+
+  const store = createTuiStateStore(sessions as any);
+  console.log(renderTuiOverview(store.list()));
 }
 
 async function handleImport(args: Record<string, string | undefined>) {
