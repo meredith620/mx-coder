@@ -78,6 +78,40 @@ mx-coder completion sessions
 
 该命令用于输出当前 daemon 中可补全的 session 名，供 shell completion 内部调用；无 session 时输出为空且不报错。
 
+## Per-session 环境变量
+
+每个 session 可独立配置环境变量，持久化存储在 session 元数据中。IM worker spawn 时自动注入 `process.env`。
+
+```bash
+# 设置单个变量
+mx-coder env set my-session API_KEY sk-xxx
+
+# 从 .env 文件批量导入（支持 KEY=VALUE、export、注释、引号值，禁止 shell eval）
+mx-coder env import my-session .env
+
+# 列出所有变量（值脱敏显示）
+mx-coder env list my-session
+
+# 获取所有变量（JSON 格式，值脱敏）
+mx-coder env get my-session
+
+# 删除单个变量
+mx-coder env unset my-session API_KEY
+
+# 清空所有变量
+mx-coder env clear my-session
+```
+
+## TUI 实时监控面板
+
+`mx-coder tui` 通过 IPC subscribe 长连接接收 daemon 推送的 `session_state_changed` 事件，持续运行并实时重绘所有 session 状态。按 Ctrl+C 或发送 SIGTERM 退出。
+
+```bash
+mx-coder tui
+```
+
+TUI 不是 Claude Code 的交互界面；进入某个 session 工作时仍需 `mx-coder attach <name>`。
+
 ## 3. Systemd 集成
 
 为了确保 `mx-coder daemon` 在后台稳定运行并随系统自启，建议使用 systemd user 模式。

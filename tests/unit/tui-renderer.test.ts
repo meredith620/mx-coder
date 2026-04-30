@@ -123,6 +123,46 @@ describe('TUI 渲染器', () => {
     expect(output).toContain('subscription=down');
   });
 
+  test('state store 连续多次事件更新后保持最新状态', () => {
+    const store = createTuiStateStore([
+      { name: 'sess-a', status: 'idle', workdir: '/tmp', lastActivityAt: new Date(), runtimeState: 'cold' } as any,
+    ]);
+
+    store.applyEvent({
+      event: 'session_state_changed',
+      data: { name: 'sess-a', status: 'im_processing', runtimeState: 'running', workdir: '/tmp', lastActivityAt: new Date().toISOString() },
+    });
+
+    store.applyEvent({
+      event: 'session_state_changed',
+      data: { name: 'sess-a', status: 'approval_pending', runtimeState: 'waiting_approval', workdir: '/tmp', lastActivityAt: new Date().toISOString() },
+    });
+
+    store.applyEvent({
+      event: 'session_state_changed',
+      data: { name: 'sess-a', status: 'idle', runtimeState: 'ready', workdir: '/tmp', lastActivityAt: new Date().toISOString() },
+    });
+
+    const sessions = store.list();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].status).toBe('idle');
+    expect(sessions[0].runtimeState).toBe('ready');
+  });
+
+  test('state store 新增 session 事件能正确添加到列表', () => {
+    const store = createTuiStateStore();
+
+    store.applyEvent({
+      event: 'session_state_changed',
+      data: { name: 'new-sess', status: 'idle', runtimeState: 'cold', workdir: '/tmp/new', lastActivityAt: new Date().toISOString() },
+    });
+
+    const sessions = store.list();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].name).toBe('new-sess');
+    expect(sessions[0].status).toBe('idle');
+  });
+
   test('state store 更新事件时保留 connection health 摘要', () => {
     const store = createTuiStateStore();
 

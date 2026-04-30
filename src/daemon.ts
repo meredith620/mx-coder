@@ -14,6 +14,7 @@ import type { AclAction, Actor } from './acl-manager.js';
 import type { ErrorCode } from './ipc/codec.js';
 import { randomUUID } from 'crypto';
 import * as fs from 'fs';
+import { maskEnvValue } from './env-file-parser.js';
 
 function mockApprovalDecision(imPlugin: IMPlugin, requestId: string, decision: 'approved' | 'denied' | 'cancelled', scope: 'once' | 'session'): void {
   const maybeRecorder = imPlugin as IMPlugin & { recordApprovalDecision?: (requestId: string, decision: 'approved' | 'denied' | 'cancelled', scope?: 'once' | 'session') => void };
@@ -86,6 +87,22 @@ export class Daemon {
     this._defaultCLIPluginName = opts.defaultCLIPluginName ?? getDefaultCLIPluginName();
     this._imPluginConfig = opts.imPluginConfig ?? {};
     this._registerHandlers();
+
+    this.registry.onStateChange((session) => {
+      this._server.pushEvent({
+        type: 'event',
+        event: 'session_state_changed',
+        data: {
+          name: session.name,
+          status: session.status,
+          runtimeState: session.runtimeState,
+          revision: session.revision,
+          workdir: session.workdir,
+          lastActivityAt: session.lastActivityAt.toISOString(),
+          queueLength: session.messageQueue.length,
+        },
+      });
+    });
 
     // Initialize IM if enabled
     if (opts.enableIM) {
@@ -1470,6 +1487,47 @@ export class Daemon {
       this.registry.clearSessionEnv(name);
       if (this._store) void this._store.flush();
       return { session: this._serializeSession(this.registry.get(name)!) };
+    });
+
+    this._server.handle('sessionEnvImport', async (args) => {
+      const name = args['name'] as string;
+      const entries = args['entries'] as Array<{ key: string; value: string }>;
+      const session = this.registry.get(name);
+      if (!session) {
+        const e = new Error(`Session not found: ${name}`) as Error & { code: ErrorCode };
+        e.code = 'SESSION_NOT_FOUND';
+        throw e;
+      }
+      if (!Array.isArray(entries)) {
+        const e = new Error('entries must be an array') as Error & { code: ErrorCode };
+        e.code = 'INVALID_REQUEST';
+        throw e;
+      }
+      for (const entry of entries) {
+        if (!/^[A-Z_][A-Z0-9_]*$/.test(entry.key)) {
+          const e = new Error(`Invalid env key: ${entry.key}`) as Error & { code: ErrorCode };
+          e.code = 'INVALID_REQUEST';
+          throw e;
+        }
+        this.registry.setSessionEnv(name, entry.key, entry.value);
+      }
+      if (this._store) void this._store.flush();
+      return { session: this._serializeSession(this.registry.get(name)!), imported: entries.length };
+    });
+
+    this._server.handle('sessionEnvList', async (args) => {
+      const name = args['name'] as string;
+      const session = this.registry.get(name);
+      if (!session) {
+        const e = new Error(`Session not found: ${name}`) as Error & { code: ErrorCode };
+        e.code = 'SESSION_NOT_FOUND';
+        throw e;
+      }
+      const entries = Object.entries(session.sessionEnv).map(([key, value]) => ({
+        key,
+        maskedValue: maskEnvValue(value),
+      }));
+      return { name, entries };
     });
 
     this._server.handle('open', async (args, actor) => {

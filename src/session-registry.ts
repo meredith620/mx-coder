@@ -64,15 +64,28 @@ export interface EnqueueOptions {
   isPassthrough?: boolean;
 }
 
+export type StateChangeCallback = (session: Session) => void;
+
 export class SessionRegistry {
   // exposed for tests via ['_sessions']
   _sessions: Map<string, Session> = new Map();
   private _mutexes: Map<string, Mutex> = new Map();
   private _store: PersistenceStore | null;
+  private _stateChangeCallbacks: StateChangeCallback[] = [];
 
   constructor(store?: PersistenceStore) {
     this._store = store ?? null;
     if (this._store) this._store.attach(this);
+  }
+
+  onStateChange(cb: StateChangeCallback): void {
+    this._stateChangeCallbacks.push(cb);
+  }
+
+  private _notifyStateChange(session: Session): void {
+    for (const cb of this._stateChangeCallbacks) {
+      try { cb(session); } catch { /* ignore callback errors */ }
+    }
   }
 
   private _getMutex(name: string): Mutex {
@@ -162,6 +175,7 @@ export class SessionRegistry {
     s.revision += 1;
     s.lastActivityAt = new Date();
     debugLog({ event: 'transition', sessionName: s.name, from, to: s.status, trigger: event, revision: s.revision });
+    this._notifyStateChange(s);
   }
 
   private _runtimeStateForStatus(status: Session['status'], previousRuntimeState?: Session['runtimeState']): Session['runtimeState'] {
@@ -196,6 +210,7 @@ export class SessionRegistry {
         s.revision += 1;
         s.lastActivityAt = new Date();
         debugLog({ event: 'reconcile_attached_dead_pid', sessionName: s.name, from, to: s.status, revision: s.revision });
+        this._notifyStateChange(s);
         continue;
       }
 
@@ -215,6 +230,7 @@ export class SessionRegistry {
         s.revision += 1;
         s.lastActivityAt = new Date();
         debugLog({ event: 'reconcile_attach_pending_dead_pid', sessionName: s.name, from, to: s.status, runtimeState: s.runtimeState, revision: s.revision });
+        this._notifyStateChange(s);
         continue;
       }
 
@@ -228,6 +244,7 @@ export class SessionRegistry {
         s.revision += 1;
         s.lastActivityAt = new Date();
         debugLog({ event: 'reconcile_takeover_pending_dead_pid', sessionName: s.name, from, to: s.status, revision: s.revision });
+        this._notifyStateChange(s);
       }
     }
   }
@@ -398,6 +415,7 @@ export class SessionRegistry {
     s.revision += 1;
     s.lastActivityAt = new Date();
     debugLog({ event: 'worker_ready', sessionName: s.name, pid: workerPid, revision: s.revision });
+    this._notifyStateChange(s);
   }
 
   markWorkerStopped(name: string): void {
@@ -413,6 +431,7 @@ export class SessionRegistry {
     s.revision += 1;
     s.lastActivityAt = new Date();
     debugLog({ event: 'worker_stopped', sessionName: s.name, revision: s.revision });
+    this._notifyStateChange(s);
   }
 
   markRecovering(name: string): void {
@@ -424,15 +443,16 @@ export class SessionRegistry {
     s.revision += 1;
     s.lastActivityAt = new Date();
     debugLog({ event: 'worker_recovering', sessionName: s.name, revision: s.revision });
+    this._notifyStateChange(s);
   }
 
   markError(name: string, _reason?: string): void {
     const s = this._getOrThrow(name);
-    // Force to error state regardless of current state
     s.status = 'error';
     s.runtimeState = 'error';
     s.revision += 1;
     s.lastActivityAt = new Date();
+    this._notifyStateChange(s);
   }
 
   // P1: first-writer-wins lazy init + attach
