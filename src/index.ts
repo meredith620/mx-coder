@@ -216,26 +216,37 @@ COMMANDS:
   im verify [-p|--plugin <name>] [-c|--config <path>]
                                   Verify IM connectivity
   im run <sessionName>            Run IM worker for a session
+  tui                             Open interactive TUI dashboard
   --help, -h                      Show this help
   --version, -v                   Show version info
 
 EXAMPLES:
   mx-coder start
   mx-coder start-fg
+  mx-coder stop
+  mx-coder restart
   mx-coder create bug-fix -w ~/myapp
-  mx-coder attach bug-fix -n my-session
+  mx-coder attach bug-fix
+  mx-coder open bug-fix
   mx-coder diagnose bug-fix
+  mx-coder env list bug-fix
+  mx-coder env import bug-fix .env
+  mx-coder env get bug-fix MY_KEY
+  mx-coder env set bug-fix MY_KEY my-value
+  mx-coder env unset bug-fix MY_KEY
   mx-coder takeover-status bug-fix
   mx-coder takeover-cancel bug-fix
   mx-coder list
-  mx-coder status bug-fix -n my-session
-  mx-coder remove bug-fix -n my-session
+  mx-coder status bug-fix
+  mx-coder remove bug-fix
   mx-coder completion bash
   mx-coder completion zsh
   mx-coder completion sessions
-  mx-coder im init -p discord
-  mx-coder im verify
-  mx-coder im init -c ~/.mx-coder/discord.json
+  mx-coder tui
+  mx-coder im init -p mattermost
+  mx-coder im verify -p mattermost
+  mx-coder im init -c ~/.mx-coder/config.json
+  mx-coder setup systemd --user --dry-run
 `.trim());
 }
 
