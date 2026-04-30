@@ -160,12 +160,6 @@ Create `~/.mx-coder/config.json`:
 - [docs/EVENT-SEMANTICS.md](docs/EVENT-SEMANTICS.md) — event semantics
 - [docs/TODO.md](docs/TODO.md) — current unfinished work
 - [docs/MATTERMOST-GAPS.md](docs/MATTERMOST-GAPS.md) — remaining Mattermost gaps
-- [docs/IMPL-SLICES.md](docs/IMPL-SLICES.md) — current implementation slice entry
-- [docs/IMPL-SLICES.phase3-future-features.md](docs/IMPL-SLICES.phase3-future-features.md) — phase3 planning
-
-### Historical docs
-
-- [docs/archive/](docs/archive/) — archived phase documents and historical materials
 
 ## Project status
 

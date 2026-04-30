@@ -187,13 +187,6 @@ source ~/.zshrc
 - [docs/EVENT-SEMANTICS.md](docs/EVENT-SEMANTICS.md) — 事件语义护栏
 - [docs/TODO.md](docs/TODO.md) — 当前未完成事项
 - [docs/MATTERMOST-GAPS.md](docs/MATTERMOST-GAPS.md) — Mattermost 方向剩余差距
-- [docs/IMPL-SLICES.md](docs/IMPL-SLICES.md) — 当前实现切片入口
-- [docs/IMPL-SLICES.p1-p3-stabilization.md](docs/IMPL-SLICES.p1-p3-stabilization.md) — 当前未完成主线任务的 TDD 切片
-- [docs/IMPL-SLICES.v2.1.md](docs/IMPL-SLICES.v2.1.md) — v2.1 新需求的 TDD 切片
-
-### 历史与归档
-
-- [docs/archive/](docs/archive/) — 历史阶段文档与归档材料
 
 ## 项目状态
 
