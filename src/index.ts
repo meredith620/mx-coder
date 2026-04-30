@@ -234,6 +234,7 @@ EXAMPLES:
   mx-coder env get bug-fix MY_KEY
   mx-coder env set bug-fix MY_KEY my-value
   mx-coder env unset bug-fix MY_KEY
+  mx-coder env clear bug-fix
   mx-coder takeover-status bug-fix
   mx-coder takeover-cancel bug-fix
   mx-coder list
