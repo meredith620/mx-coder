@@ -3,6 +3,15 @@ import type { PermissionConfig, Capability } from './types.js';
 
 type ApprovalDecision = 'pending' | 'approved' | 'denied' | 'expired' | 'cancelled';
 
+type AuditRecord = {
+  dedupeKey: string | null;
+  replayOf: string | null;
+  requestId: string;
+  operatorId: string | null;
+  action: 'approval_stale' | 'takeover_cancel_approval';
+  result: 'discarded' | 'cancelled';
+};
+
 export interface PendingApprovalCtx {
   sessionId: string;
   messageId?: string;
@@ -77,6 +86,7 @@ export class ApprovalManager {
   private _sessionScopeCache = new Set<string>();
   // per-requestId mutex for first-write-wins
   private _mutexes = new Map<string, Mutex>();
+  private _auditRecords: AuditRecord[] = [];
 
   constructor(config: PermissionConfig) {
     this._config = config;
@@ -163,14 +173,17 @@ export class ApprovalManager {
     this._states.set(requestId, state);
     this._mutexes.set(requestId, makeMutex());
 
-    const timeoutMs = (opts?.timeoutSeconds ?? this._config.timeoutSeconds) * 1000;
-    setTimeout(() => {
-      const s = this._states.get(requestId);
-      if (s && !s._decided) {
-        s.decision = 'expired';
-        s._decided = true;
-      }
-    }, timeoutMs);
+    const timeoutSeconds = opts?.timeoutSeconds ?? this._config.timeoutSeconds;
+    if (Number.isFinite(timeoutSeconds) && timeoutSeconds > 0) {
+      const timeoutMs = timeoutSeconds * 1000;
+      setTimeout(() => {
+        const s = this._states.get(requestId);
+        if (s && !s._decided) {
+          s.decision = 'expired';
+          s._decided = true;
+        }
+      }, timeoutMs);
+    }
 
     return {
       requestId,
@@ -180,7 +193,17 @@ export class ApprovalManager {
 
   async decide(requestId: string, input: DecideInput): Promise<DecideResult> {
     const state = this._states.get(requestId);
-    if (!state) return { status: 'stale' };
+    if (!state) {
+      this._auditRecords.push({
+        dedupeKey: null,
+        replayOf: null,
+        requestId,
+        operatorId: null,
+        action: 'approval_stale',
+        result: 'discarded',
+      });
+      return { status: 'stale' };
+    }
 
     const mutex = this._mutexes.get(requestId) ?? makeMutex();
     await acquireMutex(mutex);
@@ -290,6 +313,10 @@ export class ApprovalManager {
     return Array.from(this._states.values());
   }
 
+  getAuditRecords(): AuditRecord[] {
+    return [...this._auditRecords];
+  }
+
   expirePendingOnRestart(): void {
     for (const state of this._states.values()) {
       if (!state._decided && state.decision === 'pending') {
@@ -317,6 +344,14 @@ export class ApprovalManager {
         state.decision = 'cancelled';
         state.cancelReason = 'takeover';
         state._decided = true;
+        this._auditRecords.push({
+          dedupeKey: null,
+          replayOf: null,
+          requestId,
+          operatorId: state.operatorId ?? null,
+          action: 'takeover_cancel_approval',
+          result: 'cancelled',
+        });
       }
     }
   }

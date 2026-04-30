@@ -30,6 +30,10 @@ export interface TuiActions {
   diagnoseSession(name: string): Promise<Record<string, unknown>>;
   getTakeoverStatus(name: string): Promise<Record<string, unknown>>;
   cancelTakeover(name: string): Promise<Record<string, unknown>>;
+  getSessionEnv(name: string): Promise<Record<string, unknown>>;
+  setSessionEnv(input: { name: string; key: string; value: string }): Promise<Record<string, unknown>>;
+  unsetSessionEnv(input: { name: string; key: string }): Promise<Record<string, unknown>>;
+  clearSessionEnv(name: string): Promise<Record<string, unknown>>;
 }
 
 const STATUS_LABELS: Record<SessionStatus, string> = {
@@ -189,6 +193,34 @@ export function createTuiActions(client: IPCClient): TuiActions {
     },
     async cancelTakeover(name) {
       const response = await client.send('takeoverCancel', { name });
+      if (!response.ok) {
+        throw new Error(response.error.message);
+      }
+      return response.data as Record<string, unknown>;
+    },
+    async getSessionEnv(name) {
+      const response = await client.send('sessionEnvGet', { name });
+      if (!response.ok) {
+        throw new Error(response.error.message);
+      }
+      return response.data as Record<string, unknown>;
+    },
+    async setSessionEnv(input) {
+      const response = await client.send('sessionEnvSet', input);
+      if (!response.ok) {
+        throw new Error(response.error.message);
+      }
+      return response.data as Record<string, unknown>;
+    },
+    async unsetSessionEnv(input) {
+      const response = await client.send('sessionEnvUnset', input);
+      if (!response.ok) {
+        throw new Error(response.error.message);
+      }
+      return response.data as Record<string, unknown>;
+    },
+    async clearSessionEnv(name) {
+      const response = await client.send('sessionEnvClear', { name });
       if (!response.ok) {
         throw new Error(response.error.message);
       }

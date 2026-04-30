@@ -25,6 +25,18 @@ class Mutex {
     });
   }
 
+  tryAcquire(): boolean {
+    if (this._locked) {
+      return false;
+    }
+    this._locked = true;
+    return true;
+  }
+
+  isLocked(): boolean {
+    return this._locked;
+  }
+
   release(): void {
     const next = this._queue.shift();
     if (next) {
@@ -49,6 +61,7 @@ export interface EnqueueOptions {
   messageId?: string;
   userId?: string;
   receivedAt?: string;
+  isPassthrough?: boolean;
 }
 
 export class SessionRegistry {
@@ -75,6 +88,26 @@ export class SessionRegistry {
     const s = this._sessions.get(name);
     if (!s) throw new Error('SESSION_NOT_FOUND');
     return s;
+  }
+
+  private _guardSessionUnlocked(name: string): void {
+    const mutex = this._getMutex(name);
+    if (mutex.isLocked()) {
+      throw new Error('SESSION_BUSY');
+    }
+  }
+
+  private _withSessionLock<T>(name: string, fn: (session: Session) => T): T {
+    const mutex = this._getMutex(name);
+    if (!mutex.tryAcquire()) {
+      throw new Error('SESSION_BUSY');
+    }
+    try {
+      const session = this._getOrThrow(name);
+      return fn(session);
+    } finally {
+      mutex.release();
+    }
   }
 
   private _isPidAlive(pid: number | null): boolean {
@@ -207,6 +240,7 @@ export class SessionRegistry {
       sessionId: uuidv4(),
       cliPlugin: opts.cliPlugin,
       workdir: opts.workdir,
+      sessionEnv: {},
       status: 'idle',
       lifecycleStatus: 'active',
       initState: 'uninitialized',
@@ -239,6 +273,7 @@ export class SessionRegistry {
       sessionId,
       cliPlugin: opts.cliPlugin,
       workdir: opts.workdir,
+      sessionEnv: {},
       status: 'idle',
       lifecycleStatus: 'active',
       initState: 'initialized', // external session already initialized
@@ -316,6 +351,21 @@ export class SessionRegistry {
       createdAt: new Date().toISOString(),
     };
     s.imBindings.push(entry);
+    s.revision += 1;
+    s.lastActivityAt = new Date();
+  }
+
+  removeIMBinding(name: string, predicate: (binding: IMBinding) => boolean): boolean {
+    const s = this._getOrThrow(name);
+    const before = s.imBindings.length;
+    s.imBindings = s.imBindings.filter((binding) => !predicate(binding));
+    if (s.imBindings.length !== before) {
+      s.revision += 1;
+      s.lastActivityAt = new Date();
+      debugLog({ event: 'im_binding_removed', sessionName: s.name, removed: before - s.imBindings.length, revision: s.revision });
+      return true;
+    }
+    return false;
   }
 
   getByIMThread(plugin: string, threadId: string): Session | undefined {
@@ -424,7 +474,6 @@ export class SessionRegistry {
     const s = this._getOrThrow(name);
     const dedupeKey = opts.dedupeKey ?? `${opts.plugin ?? ''}:${opts.threadId ?? ''}:${opts.messageId ?? ''}`;
 
-    // Dedup check
     const existing = s.messageQueue.find(m => m.dedupeKey === dedupeKey);
     if (existing) {
       return { alreadyExists: true, existingStatus: existing.status };
@@ -434,6 +483,7 @@ export class SessionRegistry {
       messageId: opts.messageId ?? uuidv4(),
       ...(opts.plugin !== undefined ? { plugin: opts.plugin } : {}),
       ...(opts.channelId !== undefined ? { channelId: opts.channelId } : {}),
+      ...(opts.isPassthrough !== undefined ? { isPassthrough: opts.isPassthrough as any } : {}),
       threadId: opts.threadId ?? '',
       userId: opts.userId ?? '',
       content: opts.text,
@@ -455,6 +505,27 @@ export class SessionRegistry {
     s.lastActivityAt = new Date();
   }
 
+  setSessionEnv(name: string, key: string, value: string): void {
+    const s = this._getOrThrow(name);
+    s.sessionEnv[key] = value;
+    s.revision += 1;
+    s.lastActivityAt = new Date();
+  }
+
+  unsetSessionEnv(name: string, key: string): void {
+    const s = this._getOrThrow(name);
+    delete s.sessionEnv[key];
+    s.revision += 1;
+    s.lastActivityAt = new Date();
+  }
+
+  clearSessionEnv(name: string): void {
+    const s = this._getOrThrow(name);
+    s.sessionEnv = {};
+    s.revision += 1;
+    s.lastActivityAt = new Date();
+  }
+
   markDetached(name: string, _exitReason?: 'normal' | 'error'): void {
     const s = this._getOrThrow(name);
     this._guardLifecycle(s);
@@ -464,26 +535,28 @@ export class SessionRegistry {
   }
 
   markImProcessing(name: string, workerPid?: number): void {
-    const s = this._getOrThrow(name);
-    this._guardLifecycle(s);
-    if (workerPid !== undefined) s.imWorkerPid = workerPid;
-    this._applyTransition(s, 'im_message_received');
+    this._withSessionLock(name, (s) => {
+      this._guardLifecycle(s);
+      if (workerPid !== undefined) s.imWorkerPid = workerPid;
+      this._applyTransition(s, 'im_message_received');
+    });
   }
 
   markImDone(name: string): void {
-    const s = this._getOrThrow(name);
-    this._guardLifecycle(s);
-    if (s.status === 'im_processing') {
-      this._applyTransition(s, 'message_completed');
-      this._syncIdleRuntimeState(s);
-    } else if (s.status === 'attach_pending') {
-      const hadWorker = s.imWorkerPid != null;
-      this._applyTransition(s, 'im_message_completed_and_worker_stopped');
-      s.imWorkerPid = null;
-      if (hadWorker) {
-        s.runtimeState = 'attached_terminal';
+    this._withSessionLock(name, (s) => {
+      this._guardLifecycle(s);
+      if (s.status === 'im_processing') {
+        this._applyTransition(s, 'message_completed');
+        this._syncIdleRuntimeState(s);
+      } else if (s.status === 'attach_pending') {
+        const hadWorker = s.imWorkerPid != null;
+        this._applyTransition(s, 'im_message_completed_and_worker_stopped');
+        s.imWorkerPid = null;
+        if (hadWorker) {
+          s.runtimeState = 'attached_terminal';
+        }
       }
-    }
+    });
   }
 
   markAttachPending(name: string): void {

@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import type { IMPlugin } from '../types.js';
+import type { IMPlugin, ChannelStatusResult } from '../types.js';
 import type { MessageTarget, MessageContent, IncomingMessage, ApprovalRequest, IMConfigGuide } from '../../types.js';
 
 export interface MattermostConfig {
@@ -141,8 +141,8 @@ export function loadMattermostConfig(configPath = getDefaultMattermostConfigPath
   };
 }
 
-export function getMattermostCommandHelpText(): string {
-  return [
+export function getMattermostCommandHelpText(cliPluginName?: string, supportedNativeCommands?: string[]): string {
+  const lines = [
     '**mx-coder 可用命令**：',
     '',
     '`/help` — 显示本帮助',
@@ -153,9 +153,28 @@ export function getMattermostCommandHelpText(): string {
     '`/takeover <sessionName>` — 请求接管当前被终端占用的会话',
     '`/takeover-force <sessionName>` — 立即强制接管当前被终端占用的会话',
     '',
+  ];
+
+  // Add CLI-specific passthrough commands
+  if (supportedNativeCommands && supportedNativeCommands.length > 0) {
+    const cliLabel = cliPluginName ? `**${cliPluginName}** 原生命令` : 'Claude Code 原生命令';
+    lines.push(`${cliLabel}（使用 \`//<cmd>\` 透传）：`);
+    // Format commands in rows of 3 for readability
+    const cmdRows: string[] = [];
+    for (let i = 0; i < supportedNativeCommands.length; i += 3) {
+      const row = supportedNativeCommands.slice(i, i + 3).map(c => `\`${c}\``).join('  ');
+      cmdRows.push(row);
+    }
+    lines.push(...cmdRows);
+    lines.push('');
+  }
+
+  lines.push(
     '在 thread 或 session channel 中发送普通文本消息将交给 Claude 处理。若会话正被终端占用，消息会被拒绝并提示使用 takeover。',
     '`/remove`、`/attach`、`/create` 等 session 管理命令请在 CLI 中使用。',
-  ].join('\n');
+  );
+
+  return lines.join('\n');
 }
 
 export function getMattermostWelcomeText(username: string, sessionCount: number, activeCount: number): string {
@@ -237,11 +256,16 @@ export class MattermostPlugin implements IMPlugin {
     this._stopped = false;
     this._startWebSocket();
 
-    // Send welcome message
-    await this.sendMessage(
-      { plugin: 'mattermost', channelId: this._config.channelId, threadId: '' },
-      { kind: 'text', text: getMattermostWelcomeText(me.username, opts.sessionCount ?? 0, opts.activeCount ?? 0) },
-    );
+    // Send welcome message (non-fatal if it fails, e.g. channel was deleted)
+    try {
+      await this.sendMessage(
+        { plugin: 'mattermost', channelId: this._config.channelId, threadId: '' },
+        { kind: 'text', text: getMattermostWelcomeText(me.username, opts.sessionCount ?? 0, opts.activeCount ?? 0) },
+      );
+    } catch (err) {
+      // Log warning but don't fail - the channel might be deleted or inaccessible
+      console.warn(`[Mattermost] Failed to send welcome message to channel ${this._config.channelId}: ${(err as Error).message}`);
+    }
   }
 
   /** Graceful shutdown: stop WebSocket reconnect loop and close connection */
@@ -315,13 +339,12 @@ export class MattermostPlugin implements IMPlugin {
       `风险：${request.riskLevel}　能力：${request.capability}`,
       request.toolInputSummary,
       '',
-      '请直接对本消息添加 reaction：',
-      '👍 Yes, once',
-      '✅ Yes, for this session',
-      '👎 No',
-      '⏹️ Cancel',
-      '',
-      'fallback：`/approve once` ` /approve session` ` /deny` ` /cancel`',
+      '| 选项 | Emoji | Fallback |',
+      '|---|---|---|',
+      '| approve once | 👍 | `/approve once` |',
+      '| approve session | ✅ | `/approve session` |',
+      '| deny | 👎 | `/deny` |',
+      '| cancel | ⏹️ | `/cancel` |',
     ].join('\n');
   }
 
@@ -356,6 +379,29 @@ export class MattermostPlugin implements IMPlugin {
   private async _apiGet<T>(path: string): Promise<T> {
     const res = await this._apiRequest(path, { method: 'GET' });
     return res.json() as Promise<T>;
+  }
+
+  /**
+   * Check if a channel exists and is not deleted.
+   * Returns null if the channel is valid, or an object with error info if not.
+   */
+  async checkChannelStatus(channelId: string): Promise<ChannelStatusResult> {
+    try {
+      const channel = await this._apiGet<{ id: string; delete_at: number }>(`/api/v4/channels/${channelId}`);
+      if (channel.delete_at > 0) {
+        return { kind: 'deleted', error: 'Channel has been deleted' };
+      }
+      return { kind: 'ok' };
+    } catch (err) {
+      const error = (err as Error).message;
+      if (error.includes(' 403:')) {
+        return { kind: 'forbidden', error };
+      }
+      if (error.includes(' 404:')) {
+        return { kind: 'not_found', error };
+      }
+      return { kind: 'unknown_error', error };
+    }
   }
 
   /** Start WebSocket connection to receive real-time events */
@@ -664,7 +710,7 @@ export class MattermostPlugin implements IMPlugin {
         props: {
           attachments: [{
             title: `Tool: ${request.toolName}`,
-            text: `风险：${request.riskLevel}　能力：${request.capability}\n${request.toolInputSummary}`,
+            text: message,
             color: request.riskLevel === 'high' ? '#FF0000' : request.riskLevel === 'medium' ? '#FFA500' : '#00FF00',
           }],
         },

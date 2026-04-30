@@ -84,8 +84,16 @@ mx-coder completion sessions
 
 ### 3.1 当前状态
 
-`mx-coder setup systemd --user` **尚未实现**，当前仍属于 v2.1 计划项。
-在该命令落地前，请先采用手动方式配置 systemd user service。
+当前已实现：
+- `mx-coder setup systemd --user --dry-run`：输出 systemd user service unit 预览
+- `mx-coder setup systemd --user`：执行 user service 写入、`daemon-reload` 与 `enable --now`
+- `mx-coder setup systemd --user --status`：输出 user service 当前状态
+- `mx-coder setup systemd --user --uninstall`：卸载 user service 并 reload
+- user service 文件落盘规则与幂等更新逻辑已具备底层实现
+- passthrough `//<cmd>` 已可在 IM 路由到底层 coder CLI
+
+当前尚未完全闭环：
+- repair 建议仍主要以底层 status 字段与文档说明形式存在，尚未扩成更完整的 CLI repair 子命令
 
 ### 3.2 手动服务模板 (mx-coder.service)
 
@@ -119,7 +127,7 @@ WantedBy=default.target
 - **重启服务**：`systemctl --user restart mx-coder`
 - **查看状态**：`systemctl --user status mx-coder`
 
-当 `mx-coder setup systemd` 在 v2.1 中实现后，这一节应改回自动配置优先、手动步骤作为 fallback。
+当 `mx-coder setup systemd` 的完整 CLI 控制面（install/status/uninstall）收口后，这一节应改回自动配置优先、手动步骤作为 fallback。
 
 ### 卸载本地安装
 

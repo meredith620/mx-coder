@@ -133,4 +133,149 @@ describe('PersistenceStore', () => {
     expect((restoredRegistry.get('thread-sess')!.imBindings[0] as any).bindingKind).toBe('thread');
     expect((restoredRegistry.get('channel-sess')!.imBindings[0] as any).bindingKind).toBe('channel');
   });
+
+  test('S3.1: 低风险中断消息恢复后应标记 restoreAction=replay', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mx-coder-test-'));
+    fs.writeFileSync(path.join(dir, 'sessions.json'), JSON.stringify({
+      version: 1,
+      sessions: [{
+        name: 'restore-replay',
+        status: 'im_processing',
+        cliPlugin: 'claude-code',
+        workdir: '/tmp',
+        sessionId: 'sess-restore-replay',
+        messageQueue: [
+          {
+            messageId: 'm-replay-1',
+            threadId: 't1',
+            userId: 'u1',
+            content: 'list files',
+            status: 'running',
+            correlationId: 'c-replay-1',
+            dedupeKey: 'mattermost:t1:m-replay-1',
+            enqueuePolicy: 'auto_after_detach',
+          },
+        ],
+      }],
+    }));
+
+    const store = new PersistenceStore(path.join(dir, 'sessions.json'));
+    const registry = new SessionRegistry(store);
+    await store.load(registry);
+
+    const queue = registry.get('restore-replay')!.messageQueue;
+    expect(queue[0]?.status).toBe('pending');
+    expect(queue[0]?.restoreAction).toBe('replay');
+  });
+
+  test('S3.1: 带审批上下文的中断消息恢复后应标记 restoreAction=confirm', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mx-coder-test-'));
+    fs.writeFileSync(path.join(dir, 'sessions.json'), JSON.stringify({
+      version: 1,
+      sessions: [{
+        name: 'restore-confirm',
+        status: 'approval_pending',
+        cliPlugin: 'claude-code',
+        workdir: '/tmp',
+        sessionId: 'sess-restore-confirm',
+        messageQueue: [
+          {
+            messageId: 'm-confirm-1',
+            threadId: 't1',
+            userId: 'u1',
+            content: 'edit config',
+            status: 'waiting_approval',
+            approvalState: 'pending',
+            correlationId: 'c-confirm-1',
+            dedupeKey: 'mattermost:t1:m-confirm-1',
+            enqueuePolicy: 'auto_after_detach',
+          },
+        ],
+      }],
+    }));
+
+    const store = new PersistenceStore(path.join(dir, 'sessions.json'));
+    const registry = new SessionRegistry(store);
+    await store.load(registry);
+
+    const queue = registry.get('restore-confirm')!.messageQueue;
+    expect(queue[0]?.status).toBe('pending');
+    expect(queue[0]?.approvalState).toBe('expired');
+    expect(queue[0]?.restoreAction).toBe('confirm');
+  });
+
+  test('S3.1: 明确拒绝的中断审批恢复后应标记 restoreAction=discard', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mx-coder-test-'));
+    fs.writeFileSync(path.join(dir, 'sessions.json'), JSON.stringify({
+      version: 1,
+      sessions: [{
+        name: 'restore-discard',
+        status: 'approval_pending',
+        cliPlugin: 'claude-code',
+        workdir: '/tmp',
+        sessionId: 'sess-restore-discard',
+        messageQueue: [
+          {
+            messageId: 'm-discard-1',
+            threadId: 't1',
+            userId: 'u1',
+            content: 'dangerous shell op',
+            status: 'waiting_approval',
+            approvalState: 'denied',
+            correlationId: 'c-discard-1',
+            dedupeKey: 'mattermost:t1:m-discard-1',
+            enqueuePolicy: 'auto_after_detach',
+          },
+        ],
+      }],
+    }));
+
+    const store = new PersistenceStore(path.join(dir, 'sessions.json'));
+    const registry = new SessionRegistry(store);
+    await store.load(registry);
+
+    const queue = registry.get('restore-discard')!.messageQueue;
+    expect(queue[0]?.status).toBe('pending');
+    expect(queue[0]?.restoreAction).toBe('discard');
+  });
+
+  test('S3.1: replay 恢复必须写入 replayOf 且保持 dedupe 唯一', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mx-coder-test-'));
+    fs.writeFileSync(path.join(dir, 'sessions.json'), JSON.stringify({
+      version: 1,
+      sessions: [{
+        name: 'restore-replay-pointer',
+        status: 'im_processing',
+        cliPlugin: 'claude-code',
+        workdir: '/tmp',
+        sessionId: 'sess-restore-pointer',
+        messageQueue: [
+          {
+            messageId: 'm-replay-pointer-1',
+            threadId: 't1',
+            userId: 'u1',
+            content: 'safe replay message',
+            status: 'running',
+            correlationId: 'c-replay-pointer-1',
+            dedupeKey: 'mattermost:t1:m-replay-pointer-1',
+            enqueuePolicy: 'auto_after_detach',
+          },
+        ],
+      }],
+    }));
+
+    const store = new PersistenceStore(path.join(dir, 'sessions.json'));
+    const registry = new SessionRegistry(store);
+    await store.load(registry);
+
+    const queue = registry.get('restore-replay-pointer')!.messageQueue;
+    const original = queue.find((item) => item.dedupeKey === 'mattermost:t1:m-replay-pointer-1');
+    const replayed = queue.find((item) => item.replayOf === 'mattermost:t1:m-replay-pointer-1');
+
+    expect(original).toBeTruthy();
+    expect(replayed).toBeTruthy();
+    expect(replayed?.restoreAction).toBe('replay');
+    expect(replayed?.dedupeKey).toBe('mattermost:t1:m-replay-pointer-1');
+    expect(queue.filter((item) => item.replayOf === 'mattermost:t1:m-replay-pointer-1')).toHaveLength(1);
+  });
 });

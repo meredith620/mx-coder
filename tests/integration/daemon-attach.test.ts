@@ -152,6 +152,25 @@ describe('attach command', () => {
     waiter.destroy();
   });
 
+  test('attach_pending 期间 markDetached 仅释放 attach waiter，不应吞掉仍在运行的 IM worker', async () => {
+    await client.send('create', { name: 'a-attach-pending-worker', workdir: '/tmp', cli: 'claude-code' });
+    daemon.registry.markImProcessing('a-attach-pending-worker', 4321);
+    daemon.registry.markAttachPending('a-attach-pending-worker');
+
+    const before = daemon.registry.get('a-attach-pending-worker')!;
+    expect(before.status).toBe('attach_pending');
+    expect(before.imWorkerPid).toBe(4321);
+    expect(before.runtimeState).toBe('running');
+
+    const res = await client.send('markDetached', { name: 'a-attach-pending-worker', exitReason: 'normal' });
+    expect(res.ok).toBe(true);
+
+    const after = daemon.registry.get('a-attach-pending-worker')!;
+    expect(after.status).toBe('attach_pending');
+    expect(after.imWorkerPid).toBe(4321);
+    expect(after.runtimeState).toBe('running');
+  });
+
   test('takeover_pending 状态下 markDetached 释放为 idle', async () => {
     await client.send('create', { name: 'a9', workdir: '/tmp', cli: 'claude-code' });
     await client.send('attach', { name: 'a9', pid: 9999 });

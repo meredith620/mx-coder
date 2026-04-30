@@ -12,6 +12,10 @@ export type AclAction =
   | 'archive'
   | 'message'
   | 'takeover'
+  | 'takeoverStatus'
+  | 'takeoverCancel'
+  | 'open'
+  | 'import'
   | 'acl_get'
   | 'acl_grant'
   | 'acl_revoke'
@@ -36,6 +40,10 @@ const REQUIRED_ROLE: Partial<Record<AclAction, AclRole>> = {
   archive: 'owner',
   message: 'operator',
   takeover: 'owner',
+  takeoverStatus: 'owner',
+  takeoverCancel: 'owner',
+  open: 'owner',
+  import: 'owner',
   acl_grant: 'owner',
   acl_revoke: 'owner',
   reset: 'owner',

@@ -9,6 +9,17 @@ export interface CLIPlugin {
   buildAttachCommand(session: Session): CommandSpec;
   buildIMWorkerCommand(session: Session, bridgeScriptPath: string): CommandSpec;
   generateSessionId(): string;
+
+  /**
+   * Get the name of this CLI plugin (e.g., "claude-code")
+   */
+  readonly name: string;
+
+  /**
+   * Get supported native commands in pipe mode
+   * Returns array of command names that work with // prefix passthrough
+   */
+  getSupportedNativeCommands(): string[];
 }
 
 export interface LegacyIMMessageCLIPlugin extends CLIPlugin {
@@ -18,6 +29,13 @@ export interface LegacyIMMessageCLIPlugin extends CLIPlugin {
 export function hasLegacyIMMessageCommand(plugin: CLIPlugin): plugin is LegacyIMMessageCLIPlugin {
   return 'buildIMMessageCommand' in plugin && typeof (plugin as LegacyIMMessageCLIPlugin).buildIMMessageCommand === 'function';
 }
+
+export type ChannelStatusResult =
+  | { kind: 'ok' }
+  | { kind: 'deleted'; error: string }
+  | { kind: 'forbidden'; error: string }
+  | { kind: 'not_found'; error: string }
+  | { kind: 'unknown_error'; error: string };
 
 export interface IMPlugin {
   /**
@@ -66,6 +84,11 @@ export interface IMPlugin {
    * Send a typing indicator when the IM platform supports it
    */
   sendTyping?(target: MessageTarget): Promise<void>;
+
+  /**
+   * Check if a channel is valid (exists and not deleted)
+   */
+  checkChannelStatus?(channelId: string): Promise<ChannelStatusResult>;
 
   /**
    * Graceful shutdown — close connections and release resources

@@ -11,6 +11,8 @@ import { BUILD_GIT_HASH, BUILD_VERSION } from './generated/build-info.js';
 import { getCLIPlugin, getDefaultCLIPluginName } from './plugins/cli/registry.js';
 import { getClaudeSessionPath, hasClaudeSession } from './plugins/cli/claude-code.js';
 import { getIMPluginFactory, getDefaultIMPluginName } from './plugins/im/registry.js';
+import { renderUserServiceUnit, writeUserServiceUnit, installUserService, getUserServiceStatus, uninstallUserService } from './systemd.js';
+import { createTuiStateStore, renderTuiOverview } from './tui.js';
 import type { Session } from './types.js';
 
 const SOCKET_PATH = process.env.MX_CODER_SOCKET ?? path.join(os.tmpdir(), 'mx-coder-daemon.sock');
@@ -132,6 +134,12 @@ async function main() {
       case 'open':
         await handleOpen(parsed.args);
         break;
+      case 'setup':
+        await handleSetup(parsed.args);
+        break;
+      case 'env':
+        await handleEnv(parsed.args);
+        break;
       case 'list':
         await handleList();
         break;
@@ -160,8 +168,7 @@ async function main() {
         await handleIm(parsed.subcommand!, parsed.args);
         break;
       case 'tui':
-        console.error('tui: not yet implemented');
-        process.exit(1);
+        await handleTui();
         break;
       default:
         console.error(`Unknown command: ${parsed.command}`);
@@ -191,6 +198,10 @@ COMMANDS:
   attach <name> [-n|--name <name>]  Attach to a session
   open <name> [-n|--name <name>] [--space-strategy <thread|channel>]
                                   Open a session in IM with one-shot space override
+  setup systemd [--user] [--dry-run]
+                                  Preview systemd user service unit
+  env <get|set|unset|clear> <name> [key] [value]
+                                  Manage per-session environment variables
   diagnose <name>                   Print local diagnostic info for a session
   takeover-status <name>            Show takeover request state
   takeover-cancel <name>            Cancel a pending takeover request
@@ -236,6 +247,8 @@ function getCompletionCommands(): string[] {
     'create',
     'attach',
     'open',
+    'setup',
+    'env',
     'diagnose',
     'takeover-status',
     'takeover-cancel',
@@ -544,6 +557,93 @@ async function handleOpen(args: Record<string, string | undefined>) {
   console.log(JSON.stringify(response.data, null, 2));
 }
 
+async function handleSetup(args: Record<string, string | undefined>) {
+  const target = args.target;
+  if (target !== 'systemd') {
+    throw new Error(`Unsupported setup target: ${target ?? '(none)'}`);
+  }
+
+  if (args['dry-run'] === 'true') {
+    console.log(renderUserServiceUnit());
+    return;
+  }
+
+  if (args['status'] === 'true') {
+    const status = getUserServiceStatus((cmdArgs) => {
+      const child = spawn('systemctl', cmdArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+      return { code: child.exitCode ?? 0, stdout: '', stderr: '' };
+    });
+    console.log(JSON.stringify(status, null, 2));
+    if (status.needsRepair && status.repairHint) {
+      console.log(status.repairHint);
+    }
+    return;
+  }
+
+  if (args['uninstall'] === 'true') {
+    const result = uninstallUserService((cmdArgs) => {
+      const child = spawn('systemctl', cmdArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+      return { code: child.exitCode ?? 0, stdout: '', stderr: '' };
+    });
+    if (!result.ok) throw new Error(result.error);
+    console.log('systemd user service uninstalled');
+    return;
+  }
+
+  writeUserServiceUnit();
+  const result = installUserService((cmdArgs) => {
+    const child = spawn('systemctl', cmdArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+    return { code: child.exitCode ?? 0, stdout: '', stderr: '' };
+  });
+  if (!result.ok) throw new Error(result.error);
+  console.log('systemctl --user daemon-reload');
+  console.log('systemctl --user enable --now mx-coder.service');
+}
+
+async function handleEnv(args: Record<string, string | undefined>) {
+  const action = args.action;
+  const name = args.name;
+  const key = args.key;
+  const value = args.value;
+  if (!action || !name) {
+    throw new Error('Usage: mx-coder env <get|set|unset|clear> <session> [key] [value]');
+  }
+
+  const client = new IPCClient(SOCKET_PATH);
+  await client.connect();
+  try {
+    if (action === 'get') {
+      const res = await client.send('sessionEnvGet', { name });
+      if (!res.ok) throw new Error(res.error!.message);
+      console.log(JSON.stringify(res.data, null, 2));
+      return;
+    }
+    if (action === 'set') {
+      if (!key || value === undefined) throw new Error('Usage: mx-coder env set <session> <KEY> <VALUE>');
+      const res = await client.send('sessionEnvSet', { name, key, value });
+      if (!res.ok) throw new Error(res.error!.message);
+      console.log(`Set ${key} for session '${name}'`);
+      return;
+    }
+    if (action === 'unset') {
+      if (!key) throw new Error('Usage: mx-coder env unset <session> <KEY>');
+      const res = await client.send('sessionEnvUnset', { name, key });
+      if (!res.ok) throw new Error(res.error!.message);
+      console.log(`Unset ${key} for session '${name}'`);
+      return;
+    }
+    if (action === 'clear') {
+      const res = await client.send('sessionEnvClear', { name });
+      if (!res.ok) throw new Error(res.error!.message);
+      console.log(`Cleared env for session '${name}'`);
+      return;
+    }
+    throw new Error(`Unknown env action: ${action}`);
+  } finally {
+    await client.close();
+  }
+}
+
 async function handleAttach(args: Record<string, string | undefined>) {
   const name = args.name;
 
@@ -573,6 +673,7 @@ async function handleAttach(args: Record<string, string | undefined>) {
     sessionId: typeof sessionSummary.sessionId === 'string' ? sessionSummary.sessionId : '',
     cliPlugin: cliPluginName,
     workdir: typeof sessionSummary.workdir === 'string' ? sessionSummary.workdir : process.cwd(),
+    sessionEnv: (sessionSummary.sessionEnv as Record<string, string> | undefined) ?? {},
     status: (sessionSummary.status as Session['status']) ?? 'idle',
     lifecycleStatus: (sessionSummary.lifecycleStatus as Session['lifecycleStatus']) ?? 'active',
     initState,
@@ -768,6 +869,31 @@ async function handleRemove(args: Record<string, string | undefined>) {
   }
 
   console.log(`Session '${name}' removed`);
+}
+
+async function handleTui() {
+  const client = new IPCClient(SOCKET_PATH);
+  await client.connect();
+  const res = await client.send('status', {});
+  await client.close();
+
+  if (!res.ok) {
+    throw new Error(`Failed to get status: ${res.error!.message}`);
+  }
+
+  const sessions = (res.data!.sessions as Array<Record<string, unknown>>).map((session) => ({
+    name: String(session.name),
+    status: session.status as Session['status'],
+    runtimeState: session.runtimeState as Session['runtimeState'],
+    workdir: String(session.workdir ?? ''),
+    queueLength: Array.isArray(session.messageQueue) ? session.messageQueue.length : 0,
+    lastActivityAt: new Date(String(session.lastActivityAt ?? Date.now())),
+    bindingKind: (session.imBindings as Array<Record<string, unknown>> | undefined)?.[0]?.bindingKind as 'thread' | 'channel' | undefined,
+    connectionHealth: session.connectionHealth as { wsHealthy?: boolean; subscriptionHealthy?: boolean } | undefined,
+  }));
+
+  const store = createTuiStateStore(sessions as any);
+  console.log(renderTuiOverview(store.list()));
 }
 
 async function handleImport(args: Record<string, string | undefined>) {

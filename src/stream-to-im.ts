@@ -1,4 +1,4 @@
-import type { IMPlugin } from './plugins/types.js';
+import type { IMPlugin, ChannelStatusResult } from './plugins/types.js';
 import type { MessageTarget, StreamVisibility } from './types.js';
 
 const DEBOUNCE_MS = 500;
@@ -70,11 +70,13 @@ export class StreamToIM {
   private _turnMessageId: string | null = null;
   private _buffer = '';
   private _timer: ReturnType<typeof setTimeout> | null = null;
+  private _onTargetInvalid: ((target: MessageTarget, status: ChannelStatusResult) => Promise<void>) | undefined;
 
-  constructor(plugin: IMPlugin, target: MessageTarget, visibility: StreamVisibility) {
+  constructor(plugin: IMPlugin, target: MessageTarget, visibility: StreamVisibility, onTargetInvalid?: (target: MessageTarget, status: ChannelStatusResult) => Promise<void>) {
     this._plugin = plugin;
     this._target = target;
     this._visibility = visibility;
+    this._onTargetInvalid = onTargetInvalid;
   }
 
   async onEvent(event: StreamEvent): Promise<void> {
@@ -97,7 +99,12 @@ export class StreamToIM {
       if (!rendered) return;
 
       if (!this._messageId) {
-        this._messageId = await this._plugin.createLiveMessage(this._target, { kind: 'text', text: rendered });
+        try {
+          this._messageId = await this._plugin.createLiveMessage(this._target, { kind: 'text', text: rendered });
+        } catch (err) {
+          await this._handleTargetError(err);
+          return;
+        }
         this._buffer = rendered;
       } else {
         this._buffer += rendered;
@@ -160,13 +167,29 @@ export class StreamToIM {
     }, DEBOUNCE_MS);
   }
 
+  private async _handleTargetError(err: unknown): Promise<void> {
+    if (!this._target.channelId || !this._plugin.checkChannelStatus || !this._onTargetInvalid) {
+      throw err;
+    }
+    const status = await this._plugin.checkChannelStatus(this._target.channelId);
+    if (status.kind === 'deleted' || status.kind === 'not_found' || status.kind === 'forbidden') {
+      await this._onTargetInvalid(this._target, status);
+      return;
+    }
+    throw err;
+  }
+
   private async _flush(): Promise<void> {
     if (this._timer !== null) {
       clearTimeout(this._timer);
       this._timer = null;
     }
     if (this._messageId !== null) {
-      await this._plugin.updateMessage(this._messageId, { kind: 'text', text: this._buffer });
+      try {
+        await this._plugin.updateMessage(this._messageId, { kind: 'text', text: this._buffer });
+      } catch (err) {
+        await this._handleTargetError(err);
+      }
     }
   }
 }

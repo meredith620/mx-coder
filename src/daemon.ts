@@ -8,7 +8,7 @@ import { ApprovalManager } from './approval-manager.js';
 import { ApprovalHandler } from './approval-handler.js';
 import { getIMPluginFactory, getDefaultIMPluginName } from './plugins/im/registry.js';
 import { getCLIPlugin, getDefaultCLIPluginName } from './plugins/cli/registry.js';
-import type { IMPlugin } from './plugins/types.js';
+import type { IMPlugin, ChannelStatusResult } from './plugins/types.js';
 import type { IncomingMessage, MessageTarget, Session, StreamVisibility } from './types.js';
 import type { AclAction, Actor } from './acl-manager.js';
 import type { ErrorCode } from './ipc/codec.js';
@@ -140,6 +140,18 @@ export class Daemon {
         plugin: this._imPluginName ?? getDefaultIMPluginName(),
         threadId: '',
       },
+      onInvalidTarget: async (sessionId, target, status) => {
+        if (!target.channelId) return;
+        const session = this.registry.list().find((item) => item.sessionId === sessionId);
+        if (!session) return;
+        this.registry.removeIMBinding(session.name, (binding) =>
+          binding.plugin === target.plugin
+          && binding.bindingKind === 'channel'
+          && binding.channelId === target.channelId,
+        );
+        if (this._store) await this._store.flush();
+        this._debugLog({ event: 'approval_target_invalid', sessionId, sessionName: session.name, channelId: target.channelId, status: status.kind });
+      },
       resolveContext: (sessionId: string) => {
         const session = this.registry.list().find((item) => item.sessionId === sessionId);
         if (!session) return undefined;
@@ -219,6 +231,56 @@ export class Daemon {
           }
         }
       }
+    }
+
+    // Validate session bindings - check if channel bindings are still valid
+    await this._validateSessionBindings();
+  }
+
+  private async _validateSessionBindings(): Promise<void> {
+    if (!this._imPlugin || !('checkChannelStatus' in this._imPlugin)) return;
+
+    const checkChannelStatus = this._imPlugin.checkChannelStatus?.bind(this._imPlugin);
+    if (!checkChannelStatus) return;
+
+    let hasStaleBindings = false;
+    for (const session of this.registry.list()) {
+      for (const binding of [...session.imBindings]) {
+        if (binding.bindingKind !== 'channel' || !binding.channelId) {
+          continue;
+        }
+
+        const status = await checkChannelStatus(binding.channelId);
+        if (status.kind === 'ok') {
+          continue;
+        }
+
+        const shouldRemove = status.kind === 'deleted' || status.kind === 'not_found' || status.kind === 'forbidden';
+        if (!shouldRemove) {
+          this._debugLog({
+            event: 'im_binding_validation_failed',
+            sessionName: session.name,
+            channelId: binding.channelId,
+            status: status.kind,
+            error: status.error,
+          });
+          continue;
+        }
+
+        console.warn(`[Daemon] Session '${session.name}' has stale channel binding ${binding.channelId} (${status.kind}), removing binding`);
+        if (this.registry.removeIMBinding(session.name, (candidate) =>
+          candidate.plugin === binding.plugin
+          && candidate.bindingKind === binding.bindingKind
+          && candidate.threadId === binding.threadId
+          && candidate.channelId === binding.channelId,
+        )) {
+          hasStaleBindings = true;
+        }
+      }
+    }
+
+    if (hasStaleBindings && this._store) {
+      await this._store.flush();
     }
   }
 
@@ -314,10 +376,79 @@ export class Daemon {
     }
     const factory = getIMPluginFactory(msg.plugin);
 
+    if (trimmed.startsWith('//')) {
+      const passthrough = trimmed.slice(1);
+      if (passthrough.trim() === '/') {
+        await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+          kind: 'text',
+          text: 'passthrough 命令不能为空。',
+        });
+        return;
+      }
+
+      const conversationKind = this._getMattermostConversationKind();
+      let session: Session;
+      try {
+        session = this._getOrCreateSessionForConversation(
+          conversationKind === 'channel' ? (msg.channelId ?? channelId) : msg.threadId,
+          msg.plugin,
+          conversationKind,
+        );
+      } catch (err) {
+        await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+          kind: 'text',
+          text: `无法处理消息：${(err as Error).message}`,
+        });
+        return;
+      }
+      if ((this._acl.authorize(session.sessionId, msg.userId, 'send_text')) === 'deny') {
+        await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+          kind: 'text',
+          text: '无权限使用 passthrough。',
+        });
+        return;
+      }
+      if (session.status === 'attached' || session.status === 'takeover_pending') {
+        await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+          kind: 'text',
+          text: `当前会话 \`${session.name}\` 正在终端中使用，不接收 IM 消息。可使用 \`/takeover ${session.name}\` 请求接管。`,
+        });
+        return;
+      }
+      this._ensureIMActorRoles(session, msg.userId);
+      try {
+        const effectiveThreadId = conversationKind === 'channel' && msg.isTopLevel ? '' : msg.threadId;
+        this.registry.enqueueIMMessage(session.name, {
+          text: passthrough,
+          dedupeKey: msg.dedupeKey,
+          plugin: msg.plugin,
+          channelId: msg.channelId ?? channelId,
+          threadId: effectiveThreadId,
+          messageId: msg.messageId,
+          userId: msg.userId,
+          receivedAt: msg.createdAt,
+          isPassthrough: true as any,
+        });
+      } catch (err) {
+        console.error(`Failed to enqueue IM passthrough message: ${(err as Error).message}`);
+      }
+      return;
+    }
+
     if (trimmed === '/help') {
+      // Try to get session bound to this message to show CLI-specific commands
+      const boundSession = this._resolveBoundSession(msg);
+      let cliPluginName: string | undefined;
+      let supportedNativeCommands: string[] | undefined;
+
+      if (boundSession) {
+        cliPluginName = boundSession.cliPlugin;
+        supportedNativeCommands = this._getCLISupportedNativeCommands(boundSession);
+      }
+
       await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
         kind: 'text',
-        text: factory.getCommandHelpText(),
+        text: factory.getCommandHelpText(cliPluginName, supportedNativeCommands),
       });
       return;
     }
@@ -412,6 +543,27 @@ export class Daemon {
       return;
     }
     this._ensureIMActorRoles(session, msg.userId);
+    if (session.lifecycleStatus === 'archived') {
+      await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+        kind: 'text',
+        text: `当前会话 \`${session.name}\` 已归档，不能接收新的 IM 消息。`,
+      });
+      return;
+    }
+    if (session.initState === 'initializing') {
+      await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+        kind: 'text',
+        text: `当前会话 \`${session.name}\` 正在初始化，请稍后重试。`,
+      });
+      return;
+    }
+    if (session.initState === 'init_failed') {
+      await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
+        kind: 'text',
+        text: `当前会话 \`${session.name}\` 初始化失败，暂不接收新的 IM 消息。`,
+      });
+      return;
+    }
     if (session.status === 'attached' || session.status === 'takeover_pending') {
       await imPlugin.sendMessage(this._buildReplyTarget(msg, channelId), {
         kind: 'text',
@@ -610,6 +762,15 @@ export class Daemon {
       binding.plugin === msg.plugin
       && (binding.bindingKind === 'channel' ? binding.channelId === (msg.channelId ?? '') : binding.threadId === msg.threadId),
     ));
+  }
+
+  private _getCLISupportedNativeCommands(session: Session): string[] {
+    try {
+      const cliPlugin = getCLIPlugin(session.cliPlugin);
+      return cliPlugin.getSupportedNativeCommands();
+    } catch {
+      return [];
+    }
   }
 
   private async _handleStreamCommand(trimmed: string, channelId: string, msg: IncomingMessage): Promise<void> {
@@ -896,8 +1057,12 @@ export class Daemon {
         return;
       } catch (err) {
         console.error(`[/open] Failed to send to existing ${binding.bindingKind} ${binding.bindingKind === 'channel' ? binding.channelId : binding.threadId}, removing stale binding: ${(err as Error).message}`);
-        const idx = session.imBindings.indexOf(binding);
-        if (idx >= 0) session.imBindings.splice(idx, 1);
+        this.registry.removeIMBinding(sessionName, (candidate) =>
+          candidate.plugin === binding.plugin
+          && candidate.bindingKind === binding.bindingKind
+          && candidate.threadId === binding.threadId
+          && candidate.channelId === binding.channelId,
+        );
         if (this._store) void this._store.flush();
       }
     }
@@ -1055,10 +1220,12 @@ export class Daemon {
       const name = args['name'] as string;
       const workdir = args['workdir'] as string;
       const cli = args['cli'] as string;
+      const sessionEnv = (args['sessionEnv'] as Record<string, string> | undefined) ?? {};
 
       let session;
       try {
         session = this.registry.create(name, { workdir, cliPlugin: cli });
+        session.sessionEnv = { ...sessionEnv };
       } catch (err) {
         const code: ErrorCode = 'SESSION_ALREADY_EXISTS';
         const e = new Error((err as Error).message) as Error & { code: ErrorCode };
@@ -1136,6 +1303,13 @@ export class Daemon {
 
       if (session.status === 'takeover_pending') {
         this.registry.completeTakeover(name);
+      } else if (session.status === 'attach_pending') {
+        this._server.pushEventToAttachWaiter(name, {
+          type: 'event',
+          event: 'session_resume',
+          data: { name },
+        });
+        return {};
       } else {
         this.registry.markDetached(name, exitReason);
       }
@@ -1209,7 +1383,7 @@ export class Daemon {
       return { session: this._serializeSession(this.registry.get(name)!) };
     });
 
-    this._server.handle('takeoverStatus', async (args) => {
+    this._server.handle('takeoverStatus', async (args, actor) => {
       const name = args['name'] as string;
       const session = this.registry.get(name);
       if (!session) {
@@ -1217,6 +1391,7 @@ export class Daemon {
         e.code = 'SESSION_NOT_FOUND';
         throw e;
       }
+      this._checkAcl(actor, 'takeoverStatus', session);
       return {
         session: this._serializeSession(session),
         takeoverRequestedBy: session.takeoverRequestedBy,
@@ -1224,7 +1399,7 @@ export class Daemon {
       };
     });
 
-    this._server.handle('takeoverCancel', async (args) => {
+    this._server.handle('takeoverCancel', async (args, actor) => {
       const name = args['name'] as string;
       const session = this.registry.get(name);
       if (!session) {
@@ -1232,13 +1407,80 @@ export class Daemon {
         e.code = 'SESSION_NOT_FOUND';
         throw e;
       }
+      this._checkAcl(actor, 'takeoverCancel', session);
       this.registry.cancelTakeover(name);
       if (this._store) void this._store.flush();
       return { session: this._serializeSession(this.registry.get(name)!) };
     });
 
-    this._server.handle('open', async (args) => {
+    this._server.handle('sessionEnvGet', async (args) => {
       const name = args['name'] as string;
+      const session = this.registry.get(name);
+      if (!session) {
+        const e = new Error(`Session not found: ${name}`) as Error & { code: ErrorCode };
+        e.code = 'SESSION_NOT_FOUND';
+        throw e;
+      }
+      const masked = Object.fromEntries(Object.entries(session.sessionEnv).map(([k, v]) => [k, v.length <= 4 ? '*'.repeat(v.length) : `${v.slice(0, 2)}***${v.slice(-2)}`]));
+      return { name, env: masked };
+    });
+
+    this._server.handle('sessionEnvSet', async (args) => {
+      const name = args['name'] as string;
+      const key = args['key'] as string;
+      const value = args['value'] as string;
+      const session = this.registry.get(name);
+      if (!session) {
+        const e = new Error(`Session not found: ${name}`) as Error & { code: ErrorCode };
+        e.code = 'SESSION_NOT_FOUND';
+        throw e;
+      }
+      if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) {
+        const e = new Error(`Invalid env key: ${key}`) as Error & { code: ErrorCode };
+        e.code = 'INVALID_REQUEST';
+        throw e;
+      }
+      this.registry.setSessionEnv(name, key, value);
+      if (this._store) void this._store.flush();
+      return { session: this._serializeSession(this.registry.get(name)!) };
+    });
+
+    this._server.handle('sessionEnvUnset', async (args) => {
+      const name = args['name'] as string;
+      const key = args['key'] as string;
+      const session = this.registry.get(name);
+      if (!session) {
+        const e = new Error(`Session not found: ${name}`) as Error & { code: ErrorCode };
+        e.code = 'SESSION_NOT_FOUND';
+        throw e;
+      }
+      this.registry.unsetSessionEnv(name, key);
+      if (this._store) void this._store.flush();
+      return { session: this._serializeSession(this.registry.get(name)!) };
+    });
+
+    this._server.handle('sessionEnvClear', async (args) => {
+      const name = args['name'] as string;
+      const session = this.registry.get(name);
+      if (!session) {
+        const e = new Error(`Session not found: ${name}`) as Error & { code: ErrorCode };
+        e.code = 'SESSION_NOT_FOUND';
+        throw e;
+      }
+      this.registry.clearSessionEnv(name);
+      if (this._store) void this._store.flush();
+      return { session: this._serializeSession(this.registry.get(name)!) };
+    });
+
+    this._server.handle('open', async (args, actor) => {
+      const name = args['name'] as string;
+      const sessionForAcl = this.registry.get(name);
+      if (!sessionForAcl) {
+        const e = new Error(`Session not found: ${name}`) as Error & { code: ErrorCode };
+        e.code = 'SESSION_NOT_FOUND';
+        throw e;
+      }
+      this._checkAcl(actor, 'open', sessionForAcl);
       const plugin = (args['plugin'] as string | undefined) ?? this._imPluginName ?? getDefaultIMPluginName();
       const channelId = (args['channelId'] as string | undefined) ?? '';
       const threadId = (args['threadId'] as string | undefined) ?? '';
@@ -1273,11 +1515,13 @@ export class Daemon {
       const sessionId = args['sessionId'] as string;
       const workdir = args['workdir'] as string;
       const cli = args['cli'] as string;
+      const sessionEnv = (args['sessionEnv'] as Record<string, string> | undefined) ?? {};
       const name = (args['name'] as string | undefined) ?? `imported-${randomUUID().slice(0, 8)}`;
 
       let session;
       try {
         session = this.registry.importSession(sessionId, name, { workdir, cliPlugin: cli });
+        session.sessionEnv = { ...sessionEnv };
       } catch (err) {
         const e = new Error((err as Error).message) as Error & { code: ErrorCode };
         e.code = 'SESSION_ALREADY_EXISTS';
@@ -1310,6 +1554,7 @@ export class Daemon {
       lifecycleStatus: s.lifecycleStatus,
       initState: s.initState,
       workdir: s.workdir,
+      sessionEnv: s.sessionEnv,
       cliPlugin: s.cliPlugin,
       imBindings: s.imBindings,
       createdAt: s.createdAt,

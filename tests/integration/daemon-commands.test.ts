@@ -140,6 +140,22 @@ describe('Daemon CRUD commands', () => {
     const listed = (statusRes.data!.sessions as any[]).find((s: any) => s.name === 'stale-attached');
     expect(listed.status).toBe('idle');
   });
+  test('removeIMBinding 会更新 revision 并移除匹配 binding', async () => {
+    await client.send('create', { name: 'binding-remove', workdir: '/tmp', cli: 'claude-code' });
+    daemon.registry.bindIM('binding-remove', {
+      plugin: 'mattermost',
+      bindingKind: 'channel',
+      threadId: '',
+      channelId: 'channel-deleted',
+    } as any);
+    const beforeRevision = daemon.registry.get('binding-remove')!.revision;
+
+    const removed = daemon.registry.removeIMBinding('binding-remove', (binding) => binding.channelId === 'channel-deleted');
+
+    expect(removed).toBe(true);
+    expect(daemon.registry.get('binding-remove')!.imBindings).toHaveLength(0);
+    expect(daemon.registry.get('binding-remove')!.revision).toBeGreaterThan(beforeRevision);
+  });
 });
 
 describe('ACL enforcement', () => {

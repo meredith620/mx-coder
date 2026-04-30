@@ -321,6 +321,35 @@ describe('Daemon IM 路由', () => {
     expect((mockIM.sent[0].content as any).text).toContain('已强制接管会话 demo-force');
   });
 
+  test('/takeover-force <sessionName> 强制接管时会取消同 session 的待决审批', async () => {
+    const mockIM = new MockIMPlugin();
+    (daemon as any)._imPlugin = mockIM;
+    (daemon as any)._imPluginName = 'mattermost';
+    (daemon as any)._imPlugins.set('mattermost', mockIM);
+
+    daemon.registry.create('demo-force-approval', { workdir: '/tmp', cliPlugin: 'claude-code' });
+    daemon.registry.markAttached('demo-force-approval', 999999999);
+    daemon.registry.bindIM('demo-force-approval', { plugin: 'mattermost', threadId: 'thread-force-approval', channelId: 'ch1' });
+
+    const session = daemon.registry.get('demo-force-approval')!;
+    const approval = await (daemon as any)._approvalManager.createPendingApproval({
+      sessionId: session.sessionId,
+      messageId: 'msg-force-approval',
+      toolUseId: 'tool-force-approval',
+      capability: 'file_write',
+      operatorId: 'user-im',
+      correlationId: 'corr-force-approval',
+    });
+
+    const msg = makeMsg({ text: '/takeover-force demo-force-approval', isTopLevel: true, userId: 'user-im', threadId: 'thread-force-approval', messageId: 'msg-force-takeover', dedupeKey: 'dedup-force-takeover' });
+    await (daemon as any)._handleIncomingIMMessage(msg, 'ch1');
+
+    expect(daemon.registry.get('demo-force-approval')?.status).toBe('idle');
+    expect((daemon as any)._approvalManager.getApprovalState(approval.requestId)?.decision).toBe('cancelled');
+    expect((daemon as any)._approvalManager.getApprovalState(approval.requestId)?.cancelReason).toBe('takeover');
+    expect((mockIM.sent[0].content as any).text).toContain('已强制接管会话 demo-force-approval');
+  });
+
   test('普通文本入队到对应 session', async () => {
     const mockIM = new MockIMPlugin();
     (daemon as any)._imPlugin = mockIM;
