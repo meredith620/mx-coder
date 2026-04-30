@@ -742,6 +742,7 @@ async function handleAttach(args: Record<string, string | undefined>) {
     cliCommand: cmdSpec.command,
     cliArgs: cmdSpec.args,
     workdir: session.workdir,
+    sessionEnv: session.sessionEnv,
   });
 }
 

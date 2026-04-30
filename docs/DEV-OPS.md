@@ -80,7 +80,7 @@ mx-coder completion sessions
 
 ## Per-session 环境变量
 
-每个 session 可独立配置环境变量，持久化存储在 session 元数据中。IM worker spawn 时自动注入 `process.env`。
+每个 session 可独立配置环境变量，持久化存储在 session 元数据中。attach 和 IM worker spawn 时均自动注入，覆盖同名 `process.env`。
 
 ```bash
 # 设置单个变量
