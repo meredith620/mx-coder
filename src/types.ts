@@ -62,6 +62,7 @@ export interface Session {
   sessionId: string;
   cliPlugin: string;
   workdir: string;
+  sessionEnv: Record<string, string>;
 
   status: SessionStatus;
   lifecycleStatus: LifecycleStatus;

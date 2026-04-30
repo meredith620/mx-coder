@@ -1220,10 +1220,12 @@ export class Daemon {
       const name = args['name'] as string;
       const workdir = args['workdir'] as string;
       const cli = args['cli'] as string;
+      const sessionEnv = (args['sessionEnv'] as Record<string, string> | undefined) ?? {};
 
       let session;
       try {
         session = this.registry.create(name, { workdir, cliPlugin: cli });
+        session.sessionEnv = { ...sessionEnv };
       } catch (err) {
         const code: ErrorCode = 'SESSION_ALREADY_EXISTS';
         const e = new Error((err as Error).message) as Error & { code: ErrorCode };
@@ -1411,6 +1413,65 @@ export class Daemon {
       return { session: this._serializeSession(this.registry.get(name)!) };
     });
 
+    this._server.handle('sessionEnvGet', async (args) => {
+      const name = args['name'] as string;
+      const session = this.registry.get(name);
+      if (!session) {
+        const e = new Error(`Session not found: ${name}`) as Error & { code: ErrorCode };
+        e.code = 'SESSION_NOT_FOUND';
+        throw e;
+      }
+      const masked = Object.fromEntries(Object.entries(session.sessionEnv).map(([k, v]) => [k, v.length <= 4 ? '*'.repeat(v.length) : `${v.slice(0, 2)}***${v.slice(-2)}`]));
+      return { name, env: masked };
+    });
+
+    this._server.handle('sessionEnvSet', async (args) => {
+      const name = args['name'] as string;
+      const key = args['key'] as string;
+      const value = args['value'] as string;
+      const session = this.registry.get(name);
+      if (!session) {
+        const e = new Error(`Session not found: ${name}`) as Error & { code: ErrorCode };
+        e.code = 'SESSION_NOT_FOUND';
+        throw e;
+      }
+      if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) {
+        const e = new Error(`Invalid env key: ${key}`) as Error & { code: ErrorCode };
+        e.code = 'INVALID_REQUEST';
+        throw e;
+      }
+      this.registry.setSessionEnv(name, key, value);
+      if (this._store) void this._store.flush();
+      return { session: this._serializeSession(this.registry.get(name)!) };
+    });
+
+    this._server.handle('sessionEnvUnset', async (args) => {
+      const name = args['name'] as string;
+      const key = args['key'] as string;
+      const session = this.registry.get(name);
+      if (!session) {
+        const e = new Error(`Session not found: ${name}`) as Error & { code: ErrorCode };
+        e.code = 'SESSION_NOT_FOUND';
+        throw e;
+      }
+      this.registry.unsetSessionEnv(name, key);
+      if (this._store) void this._store.flush();
+      return { session: this._serializeSession(this.registry.get(name)!) };
+    });
+
+    this._server.handle('sessionEnvClear', async (args) => {
+      const name = args['name'] as string;
+      const session = this.registry.get(name);
+      if (!session) {
+        const e = new Error(`Session not found: ${name}`) as Error & { code: ErrorCode };
+        e.code = 'SESSION_NOT_FOUND';
+        throw e;
+      }
+      this.registry.clearSessionEnv(name);
+      if (this._store) void this._store.flush();
+      return { session: this._serializeSession(this.registry.get(name)!) };
+    });
+
     this._server.handle('open', async (args, actor) => {
       const name = args['name'] as string;
       const sessionForAcl = this.registry.get(name);
@@ -1454,11 +1515,13 @@ export class Daemon {
       const sessionId = args['sessionId'] as string;
       const workdir = args['workdir'] as string;
       const cli = args['cli'] as string;
+      const sessionEnv = (args['sessionEnv'] as Record<string, string> | undefined) ?? {};
       const name = (args['name'] as string | undefined) ?? `imported-${randomUUID().slice(0, 8)}`;
 
       let session;
       try {
         session = this.registry.importSession(sessionId, name, { workdir, cliPlugin: cli });
+        session.sessionEnv = { ...sessionEnv };
       } catch (err) {
         const e = new Error((err as Error).message) as Error & { code: ErrorCode };
         e.code = 'SESSION_ALREADY_EXISTS';
@@ -1491,6 +1554,7 @@ export class Daemon {
       lifecycleStatus: s.lifecycleStatus,
       initState: s.initState,
       workdir: s.workdir,
+      sessionEnv: s.sessionEnv,
       cliPlugin: s.cliPlugin,
       imBindings: s.imBindings,
       createdAt: s.createdAt,

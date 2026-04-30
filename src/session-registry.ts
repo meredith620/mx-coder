@@ -240,6 +240,7 @@ export class SessionRegistry {
       sessionId: uuidv4(),
       cliPlugin: opts.cliPlugin,
       workdir: opts.workdir,
+      sessionEnv: {},
       status: 'idle',
       lifecycleStatus: 'active',
       initState: 'uninitialized',
@@ -272,6 +273,7 @@ export class SessionRegistry {
       sessionId,
       cliPlugin: opts.cliPlugin,
       workdir: opts.workdir,
+      sessionEnv: {},
       status: 'idle',
       lifecycleStatus: 'active',
       initState: 'initialized', // external session already initialized
@@ -499,6 +501,27 @@ export class SessionRegistry {
     const s = this._getOrThrow(name);
     if (s.streamVisibility === visibility) return;
     s.streamVisibility = visibility;
+    s.revision += 1;
+    s.lastActivityAt = new Date();
+  }
+
+  setSessionEnv(name: string, key: string, value: string): void {
+    const s = this._getOrThrow(name);
+    s.sessionEnv[key] = value;
+    s.revision += 1;
+    s.lastActivityAt = new Date();
+  }
+
+  unsetSessionEnv(name: string, key: string): void {
+    const s = this._getOrThrow(name);
+    delete s.sessionEnv[key];
+    s.revision += 1;
+    s.lastActivityAt = new Date();
+  }
+
+  clearSessionEnv(name: string): void {
+    const s = this._getOrThrow(name);
+    s.sessionEnv = {};
     s.revision += 1;
     s.lastActivityAt = new Date();
   }

@@ -75,6 +75,7 @@ interface PersistedSession {
   recoveryReason?: Session['recoveryReason'];
   createdAt?: string;
   lastActivityAt?: string;
+  sessionEnv?: Record<string, string>;
 }
 
 interface PersistenceFile {
@@ -149,6 +150,7 @@ export class PersistenceStore {
         sessionId: p.sessionId ?? crypto.randomUUID(),
         cliPlugin: p.cliPlugin,
         workdir: p.workdir,
+        sessionEnv: p.sessionEnv ?? {},
         status,
         lifecycleStatus: (p.lifecycleStatus as Session['lifecycleStatus']) ?? 'active',
         initState: (p.initState as Session['initState']) ?? 'uninitialized',
@@ -181,6 +183,7 @@ export class PersistenceStore {
       sessionId: s.sessionId,
       cliPlugin: s.cliPlugin,
       workdir: s.workdir,
+      sessionEnv: s.sessionEnv,
       status: s.status,
       lifecycleStatus: s.lifecycleStatus,
       initState: s.initState,

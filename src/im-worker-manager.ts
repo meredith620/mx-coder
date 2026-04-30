@@ -55,6 +55,7 @@ export class IMWorkerManager {
       const { command, args } = this._resolvePlugin(session).buildIMWorkerCommand(session, bridgePath);
       const proc = spawn(command, args, {
         cwd: session.workdir,
+        env: { ...process.env, ...session.sessionEnv },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 

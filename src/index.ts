@@ -136,6 +136,9 @@ async function main() {
       case 'setup':
         await handleSetup(parsed.args);
         break;
+      case 'env':
+        await handleEnv(parsed.args);
+        break;
       case 'list':
         await handleList();
         break;
@@ -197,6 +200,8 @@ COMMANDS:
                                   Open a session in IM with one-shot space override
   setup systemd [--user] [--dry-run]
                                   Preview systemd user service unit
+  env <get|set|unset|clear> <name> [key] [value]
+                                  Manage per-session environment variables
   diagnose <name>                   Print local diagnostic info for a session
   takeover-status <name>            Show takeover request state
   takeover-cancel <name>            Cancel a pending takeover request
@@ -243,6 +248,7 @@ function getCompletionCommands(): string[] {
     'attach',
     'open',
     'setup',
+    'env',
     'diagnose',
     'takeover-status',
     'takeover-cancel',
@@ -594,6 +600,50 @@ async function handleSetup(args: Record<string, string | undefined>) {
   console.log('systemctl --user enable --now mx-coder.service');
 }
 
+async function handleEnv(args: Record<string, string | undefined>) {
+  const action = args.action;
+  const name = args.name;
+  const key = args.key;
+  const value = args.value;
+  if (!action || !name) {
+    throw new Error('Usage: mx-coder env <get|set|unset|clear> <session> [key] [value]');
+  }
+
+  const client = new IPCClient(SOCKET_PATH);
+  await client.connect();
+  try {
+    if (action === 'get') {
+      const res = await client.send('sessionEnvGet', { name });
+      if (!res.ok) throw new Error(res.error!.message);
+      console.log(JSON.stringify(res.data, null, 2));
+      return;
+    }
+    if (action === 'set') {
+      if (!key || value === undefined) throw new Error('Usage: mx-coder env set <session> <KEY> <VALUE>');
+      const res = await client.send('sessionEnvSet', { name, key, value });
+      if (!res.ok) throw new Error(res.error!.message);
+      console.log(`Set ${key} for session '${name}'`);
+      return;
+    }
+    if (action === 'unset') {
+      if (!key) throw new Error('Usage: mx-coder env unset <session> <KEY>');
+      const res = await client.send('sessionEnvUnset', { name, key });
+      if (!res.ok) throw new Error(res.error!.message);
+      console.log(`Unset ${key} for session '${name}'`);
+      return;
+    }
+    if (action === 'clear') {
+      const res = await client.send('sessionEnvClear', { name });
+      if (!res.ok) throw new Error(res.error!.message);
+      console.log(`Cleared env for session '${name}'`);
+      return;
+    }
+    throw new Error(`Unknown env action: ${action}`);
+  } finally {
+    await client.close();
+  }
+}
+
 async function handleAttach(args: Record<string, string | undefined>) {
   const name = args.name;
 
@@ -623,6 +673,7 @@ async function handleAttach(args: Record<string, string | undefined>) {
     sessionId: typeof sessionSummary.sessionId === 'string' ? sessionSummary.sessionId : '',
     cliPlugin: cliPluginName,
     workdir: typeof sessionSummary.workdir === 'string' ? sessionSummary.workdir : process.cwd(),
+    sessionEnv: (sessionSummary.sessionEnv as Record<string, string> | undefined) ?? {},
     status: (sessionSummary.status as Session['status']) ?? 'idle',
     lifecycleStatus: (sessionSummary.lifecycleStatus as Session['lifecycleStatus']) ?? 'active',
     initState,
