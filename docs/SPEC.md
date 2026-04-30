@@ -235,6 +235,7 @@ interface Session {
   sessionId: string;         // AI CLI 的 session ID（如 Claude Code 的 --session-id）
   cliPlugin: string;         // CLI 插件名
   workdir: string;
+  sessionEnv: Record<string, string>;  // per-session 环境变量，持久化存储，attach / IM worker spawn 时注入 process.env
 
   // 控制面状态（短期、高频变更）
   status: 'idle' | 'attach_pending' | 'attached' | 'im_processing' | 'approval_pending' | 'takeover_pending' | 'error';
@@ -389,9 +390,15 @@ mx-coder create <name> [--workdir] [--cli]  注册新会话
 mx-coder attach <name>                      直接启动 AI CLI 交互
 mx-coder list                               列出所有会话
 mx-coder remove <name>                      删除会话
-mx-coder tui                                连接 daemon，实时监控面板
+mx-coder tui                                连接 daemon，实时监控面板（subscribe 长连接 + 循环重绘 + SIGINT/SIGTERM 退出）
 mx-coder status                             daemon 和会话状态
 mx-coder import <session-id> [--name] [--workdir] [--cli]  导入外部 AI CLI 会话
+mx-coder env get <session>                  获取 session 所有环境变量（脱敏）
+mx-coder env set <session> <KEY> <VALUE>    设置 session 环境变量
+mx-coder env unset <session> <KEY>          删除 session 单个环境变量
+mx-coder env clear <session>                清空 session 所有环境变量
+mx-coder env import <session> <env-file>    从本地 env 文件批量导入（安全解析，禁止 shell eval）
+mx-coder env list <session>                 列出 session 所有环境变量 key + 脱敏 value
 ```
 
 #### 3.5.1 `mx-coder remove <name>` 语义
@@ -1298,13 +1305,12 @@ ui:
 
 ### TUI 模式
 
-`mx-coder tui` 连接 daemon 的 IPC（Unix socket），显示实时状态面板。
+`mx-coder tui` 连接 daemon 的 IPC（Unix socket），通过 `subscribe` 长连接接收 server-push event，持续运行并实时重绘状态面板。支持 SIGINT/SIGTERM 优雅退出。
 
 **功能：**
 - 查看所有 session 的状态（cold / ready / running / waiting_approval / attached_terminal / queue length / 最近活动时间）
 - 查看哪些 session 正在等待权限审批
-- 快速打开/attach/删除 session
-- 实时监控多会话运行情况
+- 实时监控多会话运行情况（基于 daemon 推送的 `session_state_changed` 事件自动刷新）
 
 **适用场景：**
 - 在电脑前同时推进多个 session，需要总览面板

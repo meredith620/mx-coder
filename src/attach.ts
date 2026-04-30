@@ -12,6 +12,7 @@ export interface AttachOptions {
   cliCommand: string;
   cliArgs: string[];
   workdir?: string;
+  sessionEnv?: Record<string, string>;
 }
 
 function appendAttachLog(payload: Record<string, unknown>): void {
@@ -28,7 +29,7 @@ function appendAttachLog(payload: Record<string, unknown>): void {
  * Attach to a session: notify daemon, wait if IM is processing, spawn CLI, then notify detach.
  */
 export async function attachSession(opts: AttachOptions): Promise<void> {
-  const { socketPath, sessionName, cliCommand, cliArgs, workdir } = opts;
+  const { socketPath, sessionName, cliCommand, cliArgs, workdir, sessionEnv } = opts;
 
   // Connect to daemon
   const socket = await new Promise<net.Socket>((resolve, reject) => {
@@ -105,6 +106,7 @@ export async function attachSession(opts: AttachOptions): Promise<void> {
       const proc = spawn(cliCommand, cliArgs, {
         stdio: 'inherit',
         ...(workdir ? { cwd: workdir } : {}),
+        ...(sessionEnv && Object.keys(sessionEnv).length > 0 ? { env: { ...process.env, ...sessionEnv } } : {}),
       });
       appendAttachLog({ event: 'spawned', sessionName, pid: proc.pid, cliCommand, cliArgs, workdir });
       proc.on('close', (code) => resolve(code ?? 0));

@@ -122,8 +122,13 @@ export function parseCLIArgs(argv: string[]): ParsedCLI {
     case 'env':
       if (positionals[0] && !args['action']) args['action'] = positionals[0];
       if (positionals[1] && !args['name']) args['name'] = positionals[1];
-      if (positionals[2] && !args['key']) args['key'] = positionals[2];
-      if (positionals[3] && !args['value']) args['value'] = positionals[3];
+      if (args['action'] === 'import') {
+        // For import action: positionals[2] is file path, not key
+        if (positionals[2] && !args['file']) args['file'] = positionals[2];
+      } else {
+        if (positionals[2] && !args['key']) args['key'] = positionals[2];
+        if (positionals[3] && !args['value']) args['value'] = positionals[3];
+      }
       break;
     case 'im':
       if (subcommand === 'run' && positionals[0] && !args['sessionName']) args['sessionName'] = positionals[0];

@@ -17,6 +17,8 @@ English README: [README.en.md](README.en.md)
 - **IM 原生命令穿透**：支持通过 `//<cmd>` 把原生命令透传给底层 coder CLI，详见 [docs/NATIVE-COMMANDS.md](docs/NATIVE-COMMANDS.md)
 - **Mattermost 连接自愈**：WebSocket 具备应用层活性检测与主动重连
 - **清晰的运行态语义**：区分 `cold / ready / running / waiting_approval / attached_terminal` 等状态
+- **Per-session 环境变量**：每个 session 可独立配置环境变量，持久化存储，attach / IM worker / 重建 / 恢复时自动注入
+- **交互式 TUI 面板**：`mx-coder tui` 通过 subscribe 长连接实时监控所有 session 状态，支持 SIGINT/SIGTERM 退出
 - **插件化扩展**：支持扩展不同 IM 平台与不同 coder CLI
 
 ## 快速开始
@@ -25,6 +27,15 @@ English README: [README.en.md](README.en.md)
 mx-coder start
 mx-coder create bug-fix --workdir ~/myapp
 mx-coder attach bug-fix
+
+# 为 session 导入环境变量
+mx-coder env import bug-fix .env
+
+# 查看 session 环境变量（值脱敏显示）
+mx-coder env list bug-fix
+
+# 实时监控面板
+mx-coder tui
 ```
 
 ### 典型流程
@@ -153,7 +164,7 @@ source ~/.zshrc
 
 ## 项目状态
 
-当前主线已完成 resident IM worker、shell completion、TUI 基础能力，以及 Mattermost thread/channel 空间策略的当前规划范围实现。
+当前主线已完成 resident IM worker、shell completion、交互式 TUI 面板（subscribe 长连接 + 实时重绘）、per-session 环境变量管理（get/set/unset/clear/import/list），以及 Mattermost thread/channel 空间策略的当前规划范围实现。
 
 当前仍需继续推进的事项见 [docs/TODO.md](docs/TODO.md)。
 

@@ -200,7 +200,7 @@ COMMANDS:
                                   Open a session in IM with one-shot space override
   setup systemd [--user] [--dry-run]
                                   Preview systemd user service unit
-  env <get|set|unset|clear> <name> [key] [value]
+  env <get|set|unset|clear|import|list> <name> [key] [value]
                                   Manage per-session environment variables
   diagnose <name>                   Print local diagnostic info for a session
   takeover-status <name>            Show takeover request state
@@ -606,7 +606,7 @@ async function handleEnv(args: Record<string, string | undefined>) {
   const key = args.key;
   const value = args.value;
   if (!action || !name) {
-    throw new Error('Usage: mx-coder env <get|set|unset|clear> <session> [key] [value]');
+    throw new Error('Usage: mx-coder env <get|set|unset|clear|import|list> <session> [key] [value]');
   }
 
   const client = new IPCClient(SOCKET_PATH);
@@ -636,6 +636,45 @@ async function handleEnv(args: Record<string, string | undefined>) {
       const res = await client.send('sessionEnvClear', { name });
       if (!res.ok) throw new Error(res.error!.message);
       console.log(`Cleared env for session '${name}'`);
+      return;
+    }
+    if (action === 'import') {
+      const filePath = args.file;
+      if (!filePath) throw new Error('Usage: mx-coder env import <session> <env-file>');
+      const { parseEnvFile } = await import('./env-file-parser.js');
+      let content: string;
+      try {
+        content = fs.readFileSync(filePath, 'utf-8');
+      } catch (err) {
+        throw new Error(`Cannot read env file: ${(err as Error).message}`);
+      }
+      const result = parseEnvFile(content);
+      if (result.errors.length > 0) {
+        for (const e of result.errors) {
+          console.error(`Line ${e.line}: ${e.message}`);
+        }
+        throw new Error(`Env file has ${result.errors.length} error(s), import aborted`);
+      }
+      if (result.entries.length === 0) {
+        console.log('No entries found in env file, nothing to import.');
+        return;
+      }
+      const res = await client.send('sessionEnvImport', { name, entries: result.entries });
+      if (!res.ok) throw new Error(res.error!.message);
+      console.log(`Imported ${result.entries.length} env var(s) into session '${name}'`);
+      return;
+    }
+    if (action === 'list') {
+      const res = await client.send('sessionEnvList', { name });
+      if (!res.ok) throw new Error(res.error!.message);
+      const entries = res.data!.entries as Array<{ key: string; maskedValue: string }>;
+      if (entries.length === 0) {
+        console.log(`Session '${name}' has no env vars.`);
+      } else {
+        for (const entry of entries) {
+          console.log(`${entry.key}=${entry.maskedValue}`);
+        }
+      }
       return;
     }
     throw new Error(`Unknown env action: ${action}`);
@@ -703,6 +742,7 @@ async function handleAttach(args: Record<string, string | undefined>) {
     cliCommand: cmdSpec.command,
     cliArgs: cmdSpec.args,
     workdir: session.workdir,
+    sessionEnv: session.sessionEnv,
   });
 }
 
@@ -874,10 +914,10 @@ async function handleRemove(args: Record<string, string | undefined>) {
 async function handleTui() {
   const client = new IPCClient(SOCKET_PATH);
   await client.connect();
-  const res = await client.send('status', {});
-  await client.close();
 
+  const res = await client.send('status', {});
   if (!res.ok) {
+    await client.close();
     throw new Error(`Failed to get status: ${res.error!.message}`);
   }
 
@@ -893,7 +933,30 @@ async function handleTui() {
   }));
 
   const store = createTuiStateStore(sessions as any);
-  console.log(renderTuiOverview(store.list()));
+
+  const clearAndRender = () => {
+    const output = renderTuiOverview(store.list());
+    process.stdout.write('\x1B[2J\x1B[H');
+    process.stdout.write(`mx-coder TUI  (press Ctrl+C to exit)\n\n`);
+    process.stdout.write(output);
+  };
+
+  clearAndRender();
+
+  await client.subscribe((event) => {
+    store.applyEvent(event);
+    clearAndRender();
+  });
+
+  const cleanup = async () => {
+    await client.close();
+    process.exit(0);
+  };
+
+  process.on('SIGINT', () => { void cleanup(); });
+  process.on('SIGTERM', () => { void cleanup(); });
+
+  await new Promise(() => {});
 }
 
 async function handleImport(args: Record<string, string | undefined>) {
