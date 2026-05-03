@@ -25,6 +25,29 @@ class MockCLIPlugin implements LegacyIMMessageCLIPlugin {
   }
 }
 
+class ResidentCLIPlugin implements LegacyIMMessageCLIPlugin {
+  constructor(private readonly outputPath: string) {}
+
+  buildAttachCommand(_session: Session): CommandSpec {
+    return { command: 'sleep', args: ['60'] };
+  }
+
+  buildIMWorkerCommand(_session: Session, _bridgeScriptPath: string): CommandSpec {
+    return {
+      command: 'bash',
+      args: ['-lc', `cat > ${this.outputPath}`],
+    };
+  }
+
+  buildIMMessageCommand(_session: Session, _prompt: string): CommandSpec {
+    return { command: 'sleep', args: ['60'] };
+  }
+
+  generateSessionId(): string {
+    return 'mock-session-id';
+  }
+}
+
 class CrashingCLIPlugin implements LegacyIMMessageCLIPlugin {
   buildAttachCommand(_session: Session): CommandSpec {
     return { command: 'false', args: [] };
@@ -103,6 +126,28 @@ describe('IMWorkerManager', () => {
     await mgr.terminate('ensure-test');
   });
 
+  test('sendMessage 多次调用时复用同一个 resident worker', async () => {
+    const tmpFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mx-resident-worker-')), 'stdin.jsonl');
+    const residentPlugin = new ResidentCLIPlugin(tmpFile);
+    const session = registry.create('resident-test', { workdir: '/tmp', cliPlugin: 'resident' });
+    const mgr = new IMWorkerManager(residentPlugin, registry);
+
+    await mgr.sendMessage('resident-test', 'turn-1');
+    const firstPid = registry.get('resident-test')!.imWorkerPid;
+
+    await mgr.sendMessage('resident-test', 'turn-2');
+    const secondPid = registry.get('resident-test')!.imWorkerPid;
+
+    expect(firstPid).not.toBeNull();
+    expect(secondPid).toBe(firstPid);
+
+    await new Promise(resolve => setTimeout(resolve, 200));
+    const lines = fs.readFileSync(tmpFile, 'utf8').trim().split('\n').filter(Boolean);
+    expect(lines).toHaveLength(2);
+
+    await mgr.terminate('resident-test');
+  });
+
   test('terminate 后清理 pid 并回到 cold', async () => {
     const session = registry.create('test', { workdir: '/tmp', cliPlugin: 'mock' });
     const mgr = new IMWorkerManager(mockPlugin, registry);
@@ -174,44 +219,30 @@ describe('IMWorkerManager', () => {
     await mgr.terminate('gen-test');
   });
 
-  test('generation 不匹配时 stale worker 立即被终止', async () => {
+  test('spawn 在 worker 存活时保持 resident 进程不变', async () => {
     const session = registry.create('test', { workdir: '/tmp', cliPlugin: 'mock' });
     const mgr = new IMWorkerManager(mockPlugin, registry);
 
     await mgr.spawn(session);
     const firstPid = registry.get('test')!.imWorkerPid;
 
-    registry['_sessions'].get('test')!.spawnGeneration++;
-
     await mgr.spawn(session);
     const secondPid = registry.get('test')!.imWorkerPid;
 
-    expect(secondPid).not.toBe(firstPid);
-
-    await new Promise(resolve => setTimeout(resolve, 200));
-
-    let firstAlive = true;
-    try {
-      process.kill(firstPid!, 0);
-    } catch {
-      firstAlive = false;
-    }
-    expect(firstAlive).toBe(false);
+    expect(secondPid).toBe(firstPid);
 
     await mgr.terminate('test');
   });
 
-  test('onDetach pre-warm 后 worker 进入 ready', async () => {
+  test('onDetach 不会启动 resident worker', async () => {
     registry.create('detach-test', { workdir: '/tmp', cliPlugin: 'mock' });
     const mgr = new IMWorkerManager(mockPlugin, registry);
 
     await mgr.onDetach('detach-test');
 
     const updated = registry.get('detach-test')!;
-    expect(updated.imWorkerPid).not.toBeNull();
-    expect(updated.runtimeState).toBe('ready');
+    expect(updated.imWorkerPid).toBeNull();
+    expect(updated.runtimeState).toBe('cold');
     expect(updated.status).toBe('idle');
-
-    await mgr.terminate('detach-test');
   });
 });

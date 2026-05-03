@@ -10,7 +10,7 @@
 在开始实现前先确认：
 
 1. Codex CLI 的真实启动参数和 app-server / exec / interactive TUI 的边界。
-2. thread id 的来源是否稳定来自 `thread.started` 或 `thread/resume` 的响应。
+2. thread id 的来源是否稳定来自 `thread/started` 或 `thread/resume` 的响应。
 3. 审批链路不能依赖不存在的 CLI flag；如果要做 IM 实时审批，只能通过 mx-coder 的 worker / bridge 承担。
 4. IM worker 必须是 resident 进程，不允许每条消息都 spawn 一个新的 `codex exec`。
 
@@ -112,10 +112,10 @@
 
 1. `tests/unit/codex-worker-adapter.test.ts`
    - `extractPromptFromWorkerInput()` 读取 worker 输入文本
-   - `normalizeCodexExecEvent()` 处理 `thread.started`
-   - `normalizeCodexExecEvent()` 处理 `item.completed` 的 agent_message
-   - `normalizeCodexExecEvent()` 处理 `turn.completed`
-   - `normalizeCodexExecEvent()` 处理 `turn.failed`
+   - `normalizeCodexExecEvent()` 处理 `thread/started`
+   - `normalizeCodexExecEvent()` 处理 `item/completed` 的 agent_message
+   - `normalizeCodexExecEvent()` 处理 `turn/completed`
+   - `normalizeCodexExecEvent()` 处理 `turn/failed`
 
 2. `tests/unit/parse-stream.test.ts`
    - 增加对 Codex 风格事件的兼容测试
@@ -198,7 +198,7 @@
 
 - 保持 `attach` 是控制权切换，不是 session 重建
 - 终端 attach 退出后，resident backend 仍保留给后续 IM 消息复用
-- 处理 `thread.started` / `thread/resume` 回填对恢复逻辑的影响
+  - 处理 `thread/started` / `thread/resume` 回填对恢复逻辑的影响
 - resident Codex 进程在 TUI 退出后仍保持存活，直到 session 显式结束或 daemon 重建
 
 ### 通过标准

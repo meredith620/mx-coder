@@ -193,6 +193,17 @@ export class IMMessageDispatcher {
       const event = this._normalizeEvent(rawEvent);
       activeTurn.lastEventAt = Date.now();
 
+      if (event.type === 'system') {
+        const payload = event.payload as { session_id?: unknown } | undefined;
+        if (typeof payload?.session_id === 'string' && payload.session_id.trim()) {
+          const session = this._opts.registry.get(sessionName);
+          const nextSessionId = payload.session_id.trim();
+          if (session && session.sessionId !== nextSessionId) {
+            this._opts.registry.updateSessionId(sessionName, nextSessionId);
+          }
+        }
+      }
+
       if (!activeTurn.cursorSatisfied && activeTurn.previousCursor) {
         if (event.messageId === activeTurn.previousCursor.lastMessageId) {
           if (event.type === 'result') {
@@ -316,8 +327,6 @@ export class IMMessageDispatcher {
         await this._handleInvalidTarget(sessionName, invalidTarget, status);
       },
     );
-    const wasUninitialized = session.initState === 'uninitialized';
-
     debugLog({
       event: 'process_start',
       sessionName,
@@ -373,10 +382,6 @@ export class IMMessageDispatcher {
       this._markMessageStatus(sessionName, message.messageId, 'completed');
       session.lastTurnOutcome = 'completed';
       session.lastResultAt = new Date().toISOString();
-
-      if (wasUninitialized) {
-        try { this._opts.registry.updateSessionId(sessionName, session.sessionId); } catch {}
-      }
     } catch (err) {
       this._markMessageStatus(sessionName, message.messageId, 'failed');
       session.lastTurnOutcome = 'failed';

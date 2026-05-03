@@ -16,6 +16,7 @@ export class IMWorkerManager {
   private _processes = new Map<string, ChildProcess>();
   private _restartTimers = new Map<string, NodeJS.Timeout>();
   private _spawnPromises = new Map<string, Promise<void>>();
+  private _terminating = new Set<string>();
   private _approvalSocketPath: string | undefined;
 
   constructor(pluginResolver: CLIPluginResolver, registry: SessionRegistry, approvalSocketPath?: string) {
@@ -39,31 +40,44 @@ export class IMWorkerManager {
     }
 
     const spawnPromise = (async () => {
-      const nextGeneration = session.spawnGeneration + 1;
-      this._registry['_sessions'].get(name)!.spawnGeneration = nextGeneration;
-
       const existingProc = this._processes.get(name);
+      if (existingProc && this.isAlive(name)) {
+        return;
+      }
+
       if (existingProc) {
-        existingProc.kill('SIGKILL');
         this._processes.delete(name);
       }
 
+      const currentSession = this._registry.get(name);
+      if (!currentSession) {
+        throw new Error('SESSION_NOT_FOUND');
+      }
+
+      const nextGeneration = currentSession.spawnGeneration + 1;
+      this._registry['_sessions'].get(name)!.spawnGeneration = nextGeneration;
+
       const bridgePath = await generateBridgeScript(
-        session.sessionId,
-        this._approvalSocketPath ?? `/tmp/mx-coder-approval-${session.sessionId}.sock`,
+        currentSession.sessionId,
+        this._approvalSocketPath ?? `/tmp/mx-coder-approval-${currentSession.sessionId}.sock`,
       );
-      const { command, args } = this._resolvePlugin(session).buildIMWorkerCommand(session, bridgePath);
+      const { command, args } = this._resolvePlugin(currentSession).buildIMWorkerCommand(currentSession, bridgePath);
       const proc = spawn(command, args, {
-        cwd: session.workdir,
-        env: { ...process.env, ...session.sessionEnv },
+        cwd: currentSession.workdir,
+        env: { ...process.env, ...currentSession.sessionEnv },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
-      const pid = proc.pid!;
+      if (!proc.pid) {
+        throw new Error(`Failed to spawn IM worker for session ${name}`);
+      }
+
+      const pid = proc.pid;
       this._processes.set(name, proc);
 
-      const currentSession = this._registry.get(name);
-      if (!currentSession || currentSession.spawnGeneration !== nextGeneration) {
+      const registeredSession = this._registry.get(name);
+      if (!registeredSession || registeredSession.spawnGeneration !== nextGeneration) {
+        this._terminating.add(name);
         proc.kill('SIGKILL');
         this._processes.delete(name);
         return;
@@ -71,16 +85,22 @@ export class IMWorkerManager {
 
       this._registry.markWorkerReady(name, pid);
 
-      proc.on('exit', (code) => {
+      proc.once('exit', (code, signal) => {
         const active = this._processes.get(name);
         if (active === proc) {
           this._processes.delete(name);
         }
 
+        const wasTerminating = this._terminating.delete(name);
         const s = this._registry.get(name);
         if (!s || s.imWorkerPid !== pid) return;
 
-        if (code !== 0 && code !== null) {
+        if (wasTerminating) {
+          this._registry.markWorkerStopped(name);
+          return;
+        }
+
+        if ((code !== 0 && code !== null) || signal !== null) {
           this._registry.markRecovering(name);
           this._registry['_sessions'].get(name)!.imWorkerPid = null;
           this._handleCrash(name);
@@ -88,6 +108,26 @@ export class IMWorkerManager {
         }
 
         this._registry.markWorkerStopped(name);
+      });
+
+      proc.once('error', () => {
+        const active = this._processes.get(name);
+        if (active === proc) {
+          this._processes.delete(name);
+        }
+
+        const wasTerminating = this._terminating.delete(name);
+        const s = this._registry.get(name);
+        if (!s || s.imWorkerPid !== pid) return;
+
+        if (wasTerminating) {
+          this._registry.markWorkerStopped(name);
+          return;
+        }
+
+        this._registry.markRecovering(name);
+        this._registry['_sessions'].get(name)!.imWorkerPid = null;
+        this._handleCrash(name);
       });
     })();
 
@@ -103,7 +143,8 @@ export class IMWorkerManager {
     const session = this._registry.get(name);
     if (!session) throw new Error('SESSION_NOT_FOUND');
 
-    if (this._processes.has(name) && session.imWorkerPid && this.isAlive(name)) {
+    const proc = this._processes.get(name);
+    if (proc && this.isAlive(name)) {
       return;
     }
 
@@ -113,6 +154,7 @@ export class IMWorkerManager {
   async terminate(name: string, signal: NodeJS.Signals = 'SIGTERM'): Promise<void> {
     const proc = this._processes.get(name);
     if (proc) {
+      this._terminating.add(name);
       proc.kill(signal);
       this._processes.delete(name);
     }
@@ -210,7 +252,8 @@ export class IMWorkerManager {
   }
 
   async onDetach(name: string): Promise<void> {
-    await this.ensureRunning(name);
+    // Attach lifecycle does not own resident backend startup.
+    void name;
   }
 
   private _handleCrash(name: string): void {

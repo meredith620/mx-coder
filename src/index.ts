@@ -9,11 +9,11 @@ import { attachSession } from './attach.js';
 import { parseCLIArgs } from './cli-parser.js';
 import { BUILD_GIT_HASH, BUILD_VERSION } from './generated/build-info.js';
 import { getCLIPlugin, getDefaultCLIPluginName } from './plugins/cli/registry.js';
-import { getClaudeSessionPath, hasClaudeSession } from './plugins/cli/claude-code.js';
 import { getIMPluginFactory, getDefaultIMPluginName } from './plugins/im/registry.js';
 import { renderUserServiceUnit, writeUserServiceUnit, installUserService, getUserServiceStatus, uninstallUserService } from './systemd.js';
 import { createTuiStateStore, renderTuiOverview } from './tui.js';
 import type { Session } from './types.js';
+import type { CLIPlugin } from './plugins/types.js';
 
 const SOCKET_PATH = process.env.MX_CODER_SOCKET ?? path.join(os.tmpdir(), 'mx-coder-daemon.sock');
 const PID_FILE = process.env.MX_CODER_PID_FILE ?? path.join(os.tmpdir(), 'mx-coder-daemon.pid');
@@ -182,7 +182,7 @@ async function main() {
 
 function printHelp() {
   console.log(`
-mx-coder - Multi-modal Claude Code session manager
+mx-coder - Multi-modal AI CLI session manager
 
 USAGE:
   mx-coder <command> [options]
@@ -695,6 +695,68 @@ async function handleEnv(args: Record<string, string | undefined>) {
   }
 }
 
+function sessionFromSummary(name: string, sessionSummary: Record<string, unknown>): Session {
+  const cliPluginName = typeof sessionSummary.cliPlugin === 'string' ? sessionSummary.cliPlugin : getDefaultCLIPluginName();
+  const initState = typeof sessionSummary.initState === 'string' ? sessionSummary.initState as Session['initState'] : 'uninitialized';
+  return {
+    name,
+    sessionId: typeof sessionSummary.sessionId === 'string' ? sessionSummary.sessionId : '',
+    cliPlugin: cliPluginName,
+    workdir: typeof sessionSummary.workdir === 'string' ? sessionSummary.workdir : process.cwd(),
+    sessionEnv: (sessionSummary.sessionEnv as Record<string, string> | undefined) ?? {},
+    status: (sessionSummary.status as Session['status']) ?? 'idle',
+    lifecycleStatus: (sessionSummary.lifecycleStatus as Session['lifecycleStatus']) ?? 'active',
+    initState,
+    runtimeState: (sessionSummary.runtimeState as Session['runtimeState']) ?? (typeof sessionSummary.status === 'string' && sessionSummary.status === 'attached' ? 'attached_terminal' : 'cold'),
+    revision: 0,
+    spawnGeneration: 0,
+    attachedPid: null,
+    imWorkerPid: null,
+    imWorkerCrashCount: 0,
+    streamVisibility: (sessionSummary.streamVisibility as Session['streamVisibility']) ?? 'normal',
+    imBindings: [],
+    messageQueue: [],
+    createdAt: sessionSummary.createdAt instanceof Date ? sessionSummary.createdAt : new Date(String(sessionSummary.createdAt ?? Date.now())),
+    lastActivityAt: new Date(),
+  };
+}
+
+async function refreshCLIAllocatedSessionIdAfterAttach(name: string, session: Session, cliPlugin: CLIPlugin, since: Date): Promise<void> {
+  const latestSessionId = cliPlugin.findLatestSessionId?.(session, since);
+  const normalizedLatestSessionId = typeof latestSessionId === 'string' ? latestSessionId.trim() : '';
+  if (!normalizedLatestSessionId || normalizedLatestSessionId === session.sessionId) {
+    return;
+  }
+
+  const client = new IPCClient(SOCKET_PATH);
+  await client.connect();
+  try {
+    const statusRes = await client.send('status', {});
+    if (!statusRes.ok) {
+      console.warn(`Warning: failed to read session status before attach backfill: ${statusRes.error!.message}`);
+      return;
+    }
+
+    const sessions = statusRes.data!.sessions as Array<Record<string, unknown>>;
+    const currentSummary = sessions.find((summary) => summary.name === name);
+    if (!currentSummary) {
+      return;
+    }
+
+    const currentSession = sessionFromSummary(name, currentSummary);
+    if (currentSession.sessionId === normalizedLatestSessionId) {
+      return;
+    }
+
+    const res = await client.send('updateSessionId', { name, sessionId: normalizedLatestSessionId });
+    if (!res.ok) {
+      console.warn(`Warning: failed to update session id after attach: ${res.error!.message}`);
+    }
+  } finally {
+    await client.close();
+  }
+}
+
 async function handleAttach(args: Record<string, string | undefined>) {
   const name = args.name;
 
@@ -717,36 +779,15 @@ async function handleAttach(args: Record<string, string | undefined>) {
     throw new Error(`Session not found: ${name}`);
   }
 
-  const cliPluginName = typeof sessionSummary.cliPlugin === 'string' ? sessionSummary.cliPlugin : getDefaultCLIPluginName();
-  const initState = typeof sessionSummary.initState === 'string' ? sessionSummary.initState as Session['initState'] : 'uninitialized';
-  const session: Session = {
-    name,
-    sessionId: typeof sessionSummary.sessionId === 'string' ? sessionSummary.sessionId : '',
-    cliPlugin: cliPluginName,
-    workdir: typeof sessionSummary.workdir === 'string' ? sessionSummary.workdir : process.cwd(),
-    sessionEnv: (sessionSummary.sessionEnv as Record<string, string> | undefined) ?? {},
-    status: (sessionSummary.status as Session['status']) ?? 'idle',
-    lifecycleStatus: (sessionSummary.lifecycleStatus as Session['lifecycleStatus']) ?? 'active',
-    initState,
-    runtimeState: (sessionSummary.runtimeState as Session['runtimeState']) ?? (typeof sessionSummary.status === 'string' && sessionSummary.status === 'attached' ? 'attached_terminal' : 'cold'),
-    revision: 0,
-    spawnGeneration: 0,
-    attachedPid: null,
-    imWorkerPid: null,
-    imWorkerCrashCount: 0,
-    streamVisibility: (sessionSummary.streamVisibility as Session['streamVisibility']) ?? 'normal',
-    imBindings: [],
-    messageQueue: [],
-    createdAt: sessionSummary.createdAt instanceof Date ? sessionSummary.createdAt : new Date(String(sessionSummary.createdAt ?? Date.now())),
-    lastActivityAt: new Date(),
-  };
+  const session = sessionFromSummary(name, sessionSummary);
 
-  if (initState !== 'uninitialized' && !session.sessionId) {
+  if (session.initState !== 'uninitialized' && !session.sessionId) {
     throw new Error(`Session ${name} is missing sessionId`);
   }
 
-  const cliPlugin = getCLIPlugin(cliPluginName);
+  const cliPlugin = getCLIPlugin(session.cliPlugin);
   const cmdSpec = cliPlugin.buildAttachCommand(session);
+  const attachStartedAt = new Date();
 
   await attachSession({
     socketPath: SOCKET_PATH,
@@ -756,6 +797,8 @@ async function handleAttach(args: Record<string, string | undefined>) {
     workdir: session.workdir,
     sessionEnv: session.sessionEnv,
   });
+
+  await refreshCLIAllocatedSessionIdAfterAttach(name, session, cliPlugin, attachStartedAt);
 }
 
 async function handleDiagnose(args: Record<string, string | undefined>) {
@@ -779,23 +822,20 @@ async function handleDiagnose(args: Record<string, string | undefined>) {
     throw new Error(`Session not found: ${name}`);
   }
 
-  const workdir = typeof session.workdir === 'string' ? session.workdir : process.cwd();
-  const sessionId = typeof session.sessionId === 'string' ? session.sessionId : '';
-  const sessionFile = getClaudeSessionPath(workdir, sessionId);
-  const hasLocalSession = hasClaudeSession(workdir, sessionId);
-  const commandMode = hasLocalSession ? '--resume' : '--session-id';
+  const diagnosticSession = sessionFromSummary(name, session);
+  const cliPlugin = getCLIPlugin(diagnosticSession.cliPlugin);
+  const cliDiagnostics = cliPlugin.getSessionDiagnostics?.(diagnosticSession) ?? {};
 
   console.log(JSON.stringify({
     name,
-    sessionId,
+    sessionId: diagnosticSession.sessionId,
+    cliPlugin: diagnosticSession.cliPlugin,
     status: session.status,
     lifecycleStatus: session.lifecycleStatus,
     initState: session.initState,
-    workdir,
+    workdir: diagnosticSession.workdir,
     cwd: process.cwd(),
-    localClaudeSessionPath: sessionFile,
-    localClaudeSessionExists: hasLocalSession,
-    nextAttachMode: commandMode,
+    ...cliDiagnostics,
     logPath: LOG_PATH,
     socketPath: SOCKET_PATH,
     persistencePath: PERSISTENCE_PATH,

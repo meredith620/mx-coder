@@ -40,19 +40,19 @@
 Codex 的 stdout / SDK 事件流不是 Claude Code 的 stream-json。
 需要按 Codex 自己的事件模型处理：
 
-- `thread.started`
-- `turn.started`
-- `item.started`
-- `item.updated`
-- `item.completed`
-- `turn.completed`
-- `turn.failed`
+- `thread/started`
+- `turn/started`
+- `item/started`
+- `item/updated`
+- `item/completed`
+- `turn/completed`
+- `turn/failed`
 
 其中：
 
-- `thread.started` 提供 thread id 回填信号。
-- `item.completed` 提供 assistant / reasoning / tool call 的完成事件。
-- `turn.completed` / `turn.failed` 是一轮结束边界。
+- `thread/started` 提供 thread id 回填信号。
+- `item/completed` 提供 assistant / reasoning / tool call 的完成事件。
+- `turn/completed` / `turn/failed` 是一轮结束边界。
 
 ---
 
@@ -93,11 +93,11 @@ Codex 事件需要映射为 mx-coder 内部事件语义。
 
 建议映射：
 
-- `thread.started` -> `system`
-- `item.started` / `item.updated` / `item.completed` 中的 `agent_message` -> `assistant`
+- `thread/started` -> `system`
+- `item/started` / `item/updated` / `item/completed` 中的 `agent_message` -> `assistant`
 - `reasoning` -> `assistant` 的 thinking block
-- `turn.completed` -> `result`
-- `turn.failed` -> `result`，并标记 `is_error`
+- `turn/completed` -> `result`
+- `turn/failed` -> `result`，并标记 `is_error`
 - 其他 item 类型保留为可展示摘要，但不能破坏轮次边界
 
 事件映射的重点不是一比一复刻 Codex 结构，而是保证：
@@ -115,7 +115,7 @@ IM 侧 Codex 适配必须满足以下生命周期要求：
 - 当 TUI 退出后，mx-coder 继续接管这个 resident 进程，IM 仍通过同一个 `codex app-server` 与该 thread 交互。
 - IM 消息到来时不应重新 spawn 一个新的 Codex 进程。
 - 一旦 app-server 连接断开或 Codex 进程退出，mx-coder 需要把该 session 标记为 worker 失活并由 daemon 负责重建，而不是把每条消息都退化成一次性 `codex exec`。
-- 如果 session 仍未绑定 thread id，则首次 `thread.started` 或 `thread/resume` 响应用于回填 mx-coder session id。
+- 如果 session 仍未绑定 thread id，则首次 `thread/started` 或 `thread/resume` 响应用于回填 mx-coder session id。
 - 如果 session 已绑定 thread id，则后续消息直接在同一个 thread 上调用 `turn/start`。
 
 ---
@@ -176,7 +176,7 @@ mx-coder 负责：
 ### 5.2 首次 attach / 首次 turn
 
 - 如果 session 没有 thread id，Codex 首次启动后生成。
-- 监听 `thread.started`。
+- 监听 `thread/started`。
 - 触发 `updateSessionId` 或等价回填逻辑。
 - 回填后 session 与 Codex thread id 绑定。
 
