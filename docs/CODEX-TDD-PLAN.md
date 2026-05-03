@@ -9,8 +9,8 @@
 
 在开始实现前先确认：
 
-1. Codex CLI 的真实启动参数和 app-server / exec 的边界。
-2. thread id 的来源是否稳定来自 `thread.started`。
+1. Codex CLI 的真实启动参数和 app-server / exec / interactive TUI 的边界。
+2. thread id 的来源是否稳定来自 `thread.started` 或 `thread/resume` 的响应。
 3. 审批链路不能依赖不存在的 CLI flag；如果要做 IM 实时审批，只能通过 mx-coder 的 worker / bridge 承担。
 4. IM worker 必须是 resident 进程，不允许每条消息都 spawn 一个新的 `codex exec`。
 
@@ -22,7 +22,7 @@
 
 ### 目标
 
-把 Codex 插件作为可注册的 CLI plugin 接入，并明确 resident app-server 启动方式，但不碰复杂事件流。
+把 Codex 插件作为可注册的 CLI plugin 接入，并明确前台 attach 与 resident app-server 的分工，但不碰复杂事件流。
 
 ### 测试优先清单
 
@@ -31,7 +31,7 @@
    - `listCLIPlugins()` 包含 `codex-cli`
 
 2. `tests/unit/codex-cli-plugin.test.ts`
-   - `buildAttachCommand` 在没有 thread id 时返回新启动命令
+   - `buildAttachCommand` 在没有 thread id 时返回交互式启动命令
    - `buildAttachCommand` 在已有 thread id 时返回 resume 命令
    - `getSessionDiagnostics` 返回 Codex home / session path / nextAttachMode
    - `generateSessionId()` 生成 UUID
@@ -43,6 +43,7 @@
 - 增加 session 诊断输出
 - attach/resume 真实命令应以 `codex resume` / `codex` 交互入口为准，而不是 Claude Code 的 `--session-id`
 - resident worker 主路径应使用 `codex app-server --listen unix://...`
+- resident backend 必须由 IM dispatcher 懒加载，不能跟 `attach` 共享启动时机
 
 ### 通过标准
 
@@ -86,7 +87,7 @@
 
 ### 目标
 
-把 Codex JSONL 输出变成 mx-coder 内部可消费的 CLIEvent。
+把 resident Codex 的事件流变成 mx-coder 内部可消费的 CLIEvent。
 
 ### 测试优先清单
 
@@ -108,8 +109,9 @@
 
 - worker adapter 负责从 stdin 读 mx-coder worker 输入
 - adapter 负责启动或连接 `codex app-server --listen unix://...`
-- adapter 负责对 resident app-server 发起 `thread/start` / `turn/start` / `turn/interrupt`
+- adapter 负责对 resident app-server 发起 `thread/start` / `thread/resume` / `turn/start` / `turn/interrupt`
 - adapter 负责事件流归一化与 cursor 管理
+- 任何时候都不能把每条 IM 消息降级成一次新的 `codex exec`
 
 ### 通过标准
 
@@ -142,7 +144,7 @@
 ### 实现内容
 
 - 审批仍由 `ApprovalManager` / `ApprovalHandler` 统一控制
-- Codex worker 只消费 allow / deny 结果
+- resident Codex 控制面只消费 allow / deny 结果
 - 审批消息带上最小上下文：toolName、toolInputSummary、riskLevel、scopeOptions
 - worker 实现不应依赖不存在的 `--permission-prompt-tool`；审批等待应由 resident bridge 保持连接并把决策回传给同一 Codex 控制面
 
@@ -174,7 +176,8 @@
 ### 实现内容
 
 - 保持 `attach` 是控制权切换，不是 session 重建
-- 处理 `thread.started` 回填对恢复逻辑的影响
+- 终端 attach 退出后，resident backend 仍保留给后续 IM 消息复用
+- 处理 `thread.started` / `thread/resume` 回填对恢复逻辑的影响
 - resident Codex 进程在 TUI 退出后仍保持存活，直到 session 显式结束或 daemon 重建
 
 ### 通过标准
