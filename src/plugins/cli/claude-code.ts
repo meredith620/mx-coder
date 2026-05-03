@@ -68,6 +68,16 @@ export class ClaudeCodePlugin implements CLIPlugin {
     return [...SUPPORTED_NATIVE_COMMANDS];
   }
 
+  getSessionDiagnostics(session: Session): Record<string, unknown> {
+    const sessionPath = getClaudeSessionPath(session.workdir, session.sessionId);
+    const hasLocalSession = hasClaudeSession(session.workdir, session.sessionId);
+    return {
+      localClaudeSessionPath: sessionPath,
+      localClaudeSessionExists: hasLocalSession,
+      nextAttachMode: hasLocalSession ? '--resume' : '--session-id',
+    };
+  }
+
   /**
    * 真实恢复依据不是 initState，而是 Claude 本地 session 文件是否存在。
    * 这样可覆盖”打开 TUI 但未产生任何可恢复对话”这类场景。

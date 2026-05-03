@@ -10,8 +10,8 @@ English README: [README.en.md](README.en.md)
 
 ## 核心特性
 
-- **终端原生体验**：`attach` 时直接进入 Claude Code，不加中间代理层
-- **IM 常驻会话 worker**：每个活跃 session 维护一个常驻 Claude 进程，后续消息连续写入同一 stdin
+- **终端原生体验**：`attach` 时直接进入底层 AI CLI，不加中间代理层
+- **IM 会话 worker**：每个活跃 session 维护对应 CLI worker；Claude Code 使用常驻 stdin，Codex CLI 通过 resident `codex app-server` bridge 复用同一后台线程
 - **终端优先与接管**：终端占用时，IM 普通消息会被拒绝；可通过 takeover 请求或强制接管
 - **多会话并行**：同时管理多个独立 session
 - **IM 原生命令穿透**：支持通过 `//<cmd>` 把原生命令透传给底层 coder CLI，详见 [docs/NATIVE-COMMANDS.md](docs/NATIVE-COMMANDS.md)
@@ -27,6 +27,10 @@ English README: [README.en.md](README.en.md)
 mx-coder start
 mx-coder create bug-fix --workdir ~/myapp
 mx-coder attach bug-fix
+
+# 使用 Codex CLI
+mx-coder create codex-fix --workdir ~/myapp --cli codex-cli
+mx-coder attach codex-fix
 
 # 为 session 导入环境变量
 mx-coder env import bug-fix .env
@@ -69,7 +73,7 @@ mx-coder attach bug-fix
 | `mx-coder stop` | 停止运行中的守护进程 |
 | `mx-coder restart` | 重启守护进程 |
 | `mx-coder create <name> [-w <path>] [-C <cli>]` | 创建新 session |
-| `mx-coder attach <name>` | 接入已有 session，进入 Claude Code 终端交互 |
+| `mx-coder attach <name>` | 接入已有 session，进入底层 AI CLI 终端交互 |
 | `mx-coder open <name>` | 在 IM 中打开 session（one-shot space 覆盖） |
 | `mx-coder env list <session>` | 列出 session 的所有环境变量（值脱敏） |
 | `mx-coder env get <session> <KEY>` | 获取指定环境变量值 |

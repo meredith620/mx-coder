@@ -10,8 +10,8 @@ Claude Code and similar AI CLIs work best in a terminal, but once you leave your
 
 ## Key features
 
-- **Native terminal experience**: `attach` enters Claude Code directly without adding a proxy UI
-- **Resident IM worker per session**: each active session keeps a resident Claude process, and follow-up IM messages are sent to the same stdin
+- **Native terminal experience**: `attach` enters the underlying AI CLI directly without adding a proxy UI
+- **IM worker per session**: each active session keeps a CLI worker; Claude Code uses resident stdin, while Codex CLI is bridged through a resident `codex app-server` backend
 - **Terminal-first with takeover**: normal IM messages are rejected while the terminal owns the session, with takeover support when needed
 - **Multiple sessions in parallel**: manage multiple independent sessions at once
 - **Mattermost self-healing connection**: application-level liveness detection and active reconnect for WebSocket
@@ -24,6 +24,10 @@ Claude Code and similar AI CLIs work best in a terminal, but once you leave your
 mx-coder start
 mx-coder create bug-fix --workdir ~/myapp
 mx-coder attach bug-fix
+
+# Use Codex CLI
+mx-coder create codex-fix --workdir ~/myapp --cli codex-cli
+mx-coder attach codex-fix
 ```
 
 ### Typical workflow
@@ -57,7 +61,7 @@ mx-coder attach bug-fix
 | `mx-coder stop` | Stop the running daemon |
 | `mx-coder restart` | Restart the daemon |
 | `mx-coder create <name> [-w <path>] [-C <cli>]` | Create a new session |
-| `mx-coder attach <name>` | Attach to an existing session, enter Claude Code terminal |
+| `mx-coder attach <name>` | Attach to an existing session, enter the underlying AI CLI terminal |
 | `mx-coder open <name>` | Open session in IM (one-shot space override) |
 | `mx-coder env list <session>` | List all env vars for a session (values masked) |
 | `mx-coder env get <session> <KEY>` | Get a specific env var value |

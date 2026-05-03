@@ -1,11 +1,12 @@
 import { ClaudeCodePlugin } from './claude-code.js';
+import { CodexCLIPlugin } from './codex-cli.js';
 import type { CLIPlugin } from '../types.js';
 
 const DEFAULT_CLI_PLUGIN = 'claude-code';
 
 const CLI_PLUGINS: Record<string, () => CLIPlugin> = {
   'claude-code': () => new ClaudeCodePlugin(),
-  // 未来扩展：'gemini-cli': () => new GeminiCLIPlugin(),
+  'codex-cli': () => new CodexCLIPlugin(),
 };
 
 export function getCLIPlugin(name: string): CLIPlugin {

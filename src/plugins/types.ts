@@ -20,6 +20,16 @@ export interface CLIPlugin {
    * Returns array of command names that work with // prefix passthrough
    */
   getSupportedNativeCommands(): string[];
+
+  /**
+   * Optional local diagnostics for CLI-specific session persistence.
+   */
+  getSessionDiagnostics?(session: Session): Record<string, unknown>;
+
+  /**
+   * Optional post-attach hook used by CLIs that allocate their own session IDs.
+   */
+  findLatestSessionId?(session: Session, since: Date): string | undefined;
 }
 
 export interface LegacyIMMessageCLIPlugin extends CLIPlugin {

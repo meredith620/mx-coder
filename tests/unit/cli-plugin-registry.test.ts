@@ -1,6 +1,7 @@
 import { describe, test, expect } from 'vitest';
 import { getCLIPlugin, listCLIPlugins, getDefaultCLIPluginName } from '../../src/plugins/cli/registry.js';
 import { ClaudeCodePlugin } from '../../src/plugins/cli/claude-code.js';
+import { CodexCLIPlugin } from '../../src/plugins/cli/codex-cli.js';
 
 describe('CLI Plugin Registry', () => {
   test('getCLIPlugin 返回 claude-code 插件实例', () => {
@@ -12,9 +13,15 @@ describe('CLI Plugin Registry', () => {
     expect(() => getCLIPlugin('unknown-plugin')).toThrow(/Unknown CLI plugin: unknown-plugin/);
   });
 
+  test('getCLIPlugin 返回 codex-cli 插件实例', () => {
+    const plugin = getCLIPlugin('codex-cli');
+    expect(plugin).toBeInstanceOf(CodexCLIPlugin);
+  });
+
   test('listCLIPlugins 返回已注册插件列表', () => {
     const plugins = listCLIPlugins();
     expect(plugins).toContain('claude-code');
+    expect(plugins).toContain('codex-cli');
     expect(plugins.length).toBeGreaterThan(0);
   });
 

@@ -15,6 +15,7 @@ type JsonRecord = Record<string, unknown>;
 
 interface Transport {
   request<T = unknown>(method: string, params?: JsonRecord): Promise<T>;
+  notify(method: string, params?: JsonRecord): void;
   onNotification(handler: (message: JsonRecord) => void): void;
   close(): Promise<void>;
 }
@@ -48,6 +49,10 @@ function asRecord(value: unknown): JsonRecord | undefined {
 
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function normalizeMethodName(value: unknown): string {
+  return (asString(value) ?? '').replace(/\//g, '.');
 }
 
 function textFromContent(value: unknown): string {
@@ -122,13 +127,13 @@ function normalizeItem(item: JsonRecord, turnId: string): JsonRecord | undefined
 }
 
 function normalizeEvent(raw: JsonRecord, fallbackThreadId: string, fallbackTurnId?: string): JsonRecord | undefined {
-  const method = asString(raw.method) ?? asString(raw.type) ?? '';
+  const method = normalizeMethodName(raw.method ?? raw.type);
   const params = asRecord(raw.params);
   const result = asRecord(raw.result);
 
-  if (method === 'thread/started') {
+  if (method === 'thread.started') {
     const thread = extractThread(params ?? result);
-    const threadId = thread?.id ?? fallbackThreadId;
+    const threadId = thread?.id;
     if (!threadId) return undefined;
     return {
       type: 'system',
@@ -142,16 +147,18 @@ function normalizeEvent(raw: JsonRecord, fallbackThreadId: string, fallbackTurnI
     };
   }
 
-  if (method === 'turn/started') {
+  if (method === 'turn.started') {
     const turn = extractTurn(params ?? result);
-    const turnId = turn?.id ?? fallbackTurnId ?? fallbackThreadId;
+    const threadId = asString(params?.threadId) ?? asString(params?.thread_id) ?? asString(result?.threadId) ?? asString(result?.thread_id);
+    const turnId = turn?.id ?? fallbackTurnId;
+    if (!turnId || !threadId) return undefined;
     if (!turnId) return undefined;
     return {
       type: 'system',
       message: {
         id: turnId,
-        session_id: fallbackThreadId,
-        thread_id: fallbackThreadId,
+        session_id: threadId,
+        thread_id: threadId,
         turn_id: turnId,
         tools: [],
         payload: turn?.payload ?? {},
@@ -159,7 +166,7 @@ function normalizeEvent(raw: JsonRecord, fallbackThreadId: string, fallbackTurnI
     };
   }
 
-  if (method === 'item/started' || method === 'item/updated' || method === 'item/completed') {
+  if (method === 'item.started' || method === 'item.updated' || method === 'item.completed') {
     const item = asRecord(params?.item ?? raw.item);
     if (!item) return undefined;
     const turnId = asString(params?.turnId) ?? asString(params?.turn_id) ?? asString(item.turnId) ?? asString(item.turn_id) ?? fallbackTurnId ?? fallbackThreadId;
@@ -167,11 +174,11 @@ function normalizeEvent(raw: JsonRecord, fallbackThreadId: string, fallbackTurnI
     return normalizeItem(item, turnId);
   }
 
-  if (method === 'turn/completed' || method === 'turn/failed') {
+  if (method === 'turn.completed' || method === 'turn.failed') {
     const turn = extractTurn(params?.turn ?? result ?? params);
     const turnId = asString(params?.turnId) ?? asString(params?.turn_id) ?? turn?.id ?? fallbackTurnId ?? fallbackThreadId;
     if (!turnId) return undefined;
-    const status = asString(turn?.payload.status) ?? (method === 'turn/failed' ? 'failed' : 'completed');
+    const status = asString(turn?.payload.status) ?? (method === 'turn.failed' ? 'failed' : 'completed');
     const error = asRecord(params?.error ?? result?.error);
     const message = asString(error?.message) ?? (status === 'failed' ? 'Codex turn failed' : '');
     return {
@@ -184,7 +191,8 @@ function normalizeEvent(raw: JsonRecord, fallbackThreadId: string, fallbackTurnI
   }
 
   if (method === 'warning') {
-    const threadId = asString(params?.threadId) ?? fallbackThreadId;
+    const threadId = asString(params?.threadId) ?? asString(params?.thread_id) ?? asString(result?.threadId) ?? asString(result?.thread_id);
+    if (!threadId) return undefined;
     return {
       type: 'system',
       message: {
@@ -255,6 +263,11 @@ class JsonLineTransport implements Transport {
         }
       });
     });
+  }
+
+  notify(method: string, params?: JsonRecord): void {
+    const payload = { jsonrpc: '2.0', method, params };
+    this._socket.write(`${JSON.stringify(payload)}\n`, 'utf8');
   }
 
   async close(): Promise<void> {
@@ -426,7 +439,7 @@ export class CodexResidentBridge {
       clientInfo: { name: 'mx-coder', title: 'mx-coder', version: '1.0.0' },
       capabilities: { experimentalApi: true },
     });
-    await this._transport.request('notifications/initialized', {});
+    this._transport.notify('notifications/initialized', {});
     return this._transport;
   }
 
