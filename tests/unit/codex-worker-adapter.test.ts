@@ -1,3 +1,4 @@
+import type { ChildProcess } from 'child_process';
 import { describe, test, expect, vi } from 'vitest';
 import {
   CodexResidentBridge,
@@ -137,7 +138,7 @@ describe('codex-worker-adapter', () => {
     const bridge = new CodexResidentBridge(
       { sessionId: 'session-uuid', workdir: '/tmp/workdir' },
       {
-        spawnAppServer: vi.fn(() => ({ pid: 123 } as unknown as NodeJS.ChildProcess)),
+        spawnAppServer: vi.fn(() => ({ pid: 123 } as unknown as ChildProcess)),
         connectTransport: vi.fn(async () => transport),
         createSocketPath: () => '/tmp/codex.sock',
         writeStdout: (line) => stdout.push(line.trim()),
@@ -225,7 +226,7 @@ describe('codex-worker-adapter', () => {
     const bridge = new CodexResidentBridge(
       { sessionId: 'session-fail', workdir: '/tmp/workdir' },
       {
-        spawnAppServer: vi.fn(() => ({ pid: 124 } as unknown as NodeJS.ChildProcess)),
+        spawnAppServer: vi.fn(() => ({ pid: 124 } as unknown as ChildProcess)),
         connectTransport: vi.fn(async () => transport),
         createSocketPath: () => '/tmp/codex-fail.sock',
         writeStdout: (line) => stdout.push(line.trim()),
