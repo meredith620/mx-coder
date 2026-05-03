@@ -411,6 +411,17 @@ export class CodexResidentBridge {
     }
   }
 
+  async interruptActiveTurn(reason = 'cancelled'): Promise<void> {
+    if (!this._transport || !this._turnId) return;
+    await this._transport.request('turn/interrupt', {
+      threadId: this._threadId ?? this._config.sessionId,
+      thread_id: this._threadId ?? this._config.sessionId,
+      turnId: this._turnId,
+      turn_id: this._turnId,
+      reason,
+    });
+  }
+
   private async _ensureTransport(): Promise<Transport> {
     if (this._transport) return this._transport;
 
