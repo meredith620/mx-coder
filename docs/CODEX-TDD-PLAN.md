@@ -16,6 +16,23 @@
 
 若某项和设计不一致，先更新设计文档，再写实现。
 
+### 0.1 交接约束
+
+当前仓库里与 Codex 相关的现有未提交改动，只能视为起点而不是完成品。后续 agent 必须遵守：
+
+- `src/plugins/cli/codex-cli.ts` 只负责 Codex 插件骨架、attach 命令和 worker 入口选择，不得把 `codex exec` 当作 IM 主路径。
+- `src/plugins/cli/codex-worker-adapter.ts` 必须按 resident app-server 方案重写，不能沿用 per-message exec。
+- `src/index.ts` 与 `src/im-message-dispatcher.ts` 里的通用回填与懒加载逻辑可以保留，但 thread id / session id 的真实来源必须按 Codex app-server 协议校准。
+- README 的 Codex 表述在实现收敛前不作为事实依据，交接时优先以本 TDD 计划为准。
+
+### 0.2 当前结论
+
+1. `attach` 走前台交互式 `codex` / `codex resume`。
+2. IM worker 走常驻 `codex app-server --listen unix://...`。
+3. resident backend 由 IM dispatcher 懒加载，不跟 attach 共享生命周期。
+4. 任何 IM turn 都必须复用同一个 resident backend，而不是新起 `codex exec`。
+5. 审批由 mx-coder 统一裁决，Codex 只消费 allow / deny 结果。
+
 ---
 
 ## 1. 第一阶段: CLI plugin 基础契约
@@ -48,6 +65,7 @@
 ### 通过标准
 
 - 不依赖 Claude Code 的 session 文件即可判断 Codex 会话状态。
+- 新 agent 在未完成 resident worker 前，不应修改 attach 的前台交互语义。
 
 ---
 
@@ -80,6 +98,7 @@
 
 - 新建 session、首次 attach、import 既有 thread id 三条路径都可用。
 - 同一 session 的多条 IM 消息复用同一个 Codex resident process。
+- 任何回填逻辑都必须是幂等的，不得把 thread id 覆盖成 per-message 临时值。
 
 ---
 
@@ -118,6 +137,7 @@
 - 一条 IM 消息能够完整跑通 Codex turn。
 - assistant 流和 result 边界稳定。
 - 连续两条 IM 消息复用同一个 resident Codex 进程，不重新 spawn。
+- 只要 resident app-server 还能连通，就不能在消息边界重新启动 Codex。
 
 ---
 
@@ -151,6 +171,7 @@
 ### 通过标准
 
 - 不需要在 Codex TUI 里做审批，也能在 IM 中完成全部决策。
+- 不能把审批等待状态实现成 per-message exec 的阻塞等待。
 
 ---
 
@@ -184,6 +205,7 @@
 
 - 终端和 IM 不会同时驱动同一 Codex thread。
 - IM 与 Codex 之间是长连接，不是 per-message exec。
+- attach 退出后，resident backend 必须仍可被 IM 复用。
 
 ---
 
@@ -204,3 +226,20 @@
 - `npm run check`
 - `npm run test:unit`
 - `npm run test:integration`
+
+---
+
+## 7. 交接执行方式
+
+下一个 agent 应按以下顺序继续：
+
+1. 先重写 `src/plugins/cli/codex-worker-adapter.ts`，把 per-message exec 改成 resident app-server 客户端。
+2. 再校准 `src/plugins/cli/codex-cli.ts`，确保 attach 语义仍然只是前台交互入口。
+3. 然后补齐 resident worker 的单元测试和集成测试。
+4. 最后再整理 README 或其他面向用户的说明。
+
+禁止事项：
+
+- 不要把 `codex exec` 重新引回 IM 主路径。
+- 不要让 attach 生命周期控制 resident backend。
+- 不要在没有 resident backend 的情况下通过“临时补丁”伪造 thread id 回填。

@@ -3,6 +3,8 @@
 > 本文档描述 mx-coder 对 `codex` CLI 的适配方案。  
 > 目标是让 Codex 像 Claude Code 一样同时支持终端 attach 和 IM 远程交互，但底层协议、会话绑定方式、审批入口都必须按 Codex 自身能力实现，不能照搬 Claude Code 的参数和行为。
 
+> 本文档是目标状态说明，不记录实现草稿；当前实施顺序和禁止事项以 [CODEX-TDD-PLAN.md](CODEX-TDD-PLAN.md) 为准。
+
 ---
 
 ## 1. 目标
