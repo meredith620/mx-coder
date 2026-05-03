@@ -90,7 +90,7 @@ function extractThread(result: unknown): ThreadResult | undefined {
   const record = asRecord(result);
   if (!record) return undefined;
   const thread = asRecord(record.thread) ?? record;
-  const id = asString(thread.id);
+  const id = asString(thread.id) ?? asString(thread.thread_id) ?? asString(thread.threadId);
   if (!id) return undefined;
   return { id, payload: thread };
 }
@@ -99,7 +99,7 @@ function extractTurn(result: unknown): TurnResult | undefined {
   const record = asRecord(result);
   if (!record) return undefined;
   const turn = asRecord(record.turn) ?? record;
-  const id = asString(turn.id);
+  const id = asString(turn.id) ?? asString(turn.turn_id) ?? asString(turn.turnId);
   if (!id) return undefined;
   return { id, payload: turn };
 }
