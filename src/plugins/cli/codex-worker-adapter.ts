@@ -152,7 +152,6 @@ function normalizeEvent(raw: JsonRecord, fallbackThreadId: string, fallbackTurnI
     const threadId = asString(params?.threadId) ?? asString(params?.thread_id) ?? asString(result?.threadId) ?? asString(result?.thread_id);
     const turnId = turn?.id ?? fallbackTurnId;
     if (!turnId || !threadId) return undefined;
-    if (!turnId) return undefined;
     return {
       type: 'system',
       message: {
