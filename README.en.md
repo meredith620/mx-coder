@@ -48,6 +48,39 @@ mx-coder attach bug-fix
 mx-coder attach bug-fix
 ```
 
+## Command Reference
+
+| Command | Description |
+|---------|-------------|
+| `mx-coder start` | Start daemon in background |
+| `mx-coder start-fg` | Start daemon in foreground (prints logs) |
+| `mx-coder stop` | Stop the running daemon |
+| `mx-coder restart` | Restart the daemon |
+| `mx-coder create <name> [-w <path>] [-C <cli>]` | Create a new session |
+| `mx-coder attach <name>` | Attach to an existing session, enter Claude Code terminal |
+| `mx-coder open <name>` | Open session in IM (one-shot space override) |
+| `mx-coder env list <session>` | List all env vars for a session (values masked) |
+| `mx-coder env get <session> <KEY>` | Get a specific env var value |
+| `mx-coder env set <session> <KEY> <VALUE>` | Set an env var |
+| `mx-coder env unset <session> <KEY>` | Remove an env var |
+| `mx-coder env clear <session>` | Clear all env vars for a session |
+| `mx-coder env import <session> <env-file>` | Bulk import env vars from a .env file |
+| `mx-coder diagnose <name>` | Print local diagnostic info for a session |
+| `mx-coder takeover-status <name>` | Show takeover request state |
+| `mx-coder takeover-cancel <name>` | Cancel a pending takeover request |
+| `mx-coder list` | List all sessions |
+| `mx-coder status [name]` | Show daemon or session status |
+| `mx-coder remove <name>` | Remove a session |
+| `mx-coder import <sessionId> -w <path>` | Import external session from file |
+| `mx-coder completion bash\|zsh\|sessions` | Print shell completion script or session list |
+| `mx-coder im init [-p <plugin>] [-c <path>]` | Generate IM plugin config template |
+| `mx-coder im verify [-p <plugin>] [-c <path>]` | Verify IM connectivity |
+| `mx-coder im run <sessionName>` | Run IM worker for a session |
+| `mx-coder tui` | Open interactive TUI dashboard |
+| `mx-coder setup systemd [--user] [--dry-run]` | Preview/install/manage systemd user service |
+| `mx-coder --help, -h` | Show this help |
+| `mx-coder --version, -v` | Show version info |
+
 ## Shell completion
 
 mx-coder supports:
@@ -127,12 +160,6 @@ Create `~/.mx-coder/config.json`:
 - [docs/EVENT-SEMANTICS.md](docs/EVENT-SEMANTICS.md) — event semantics
 - [docs/TODO.md](docs/TODO.md) — current unfinished work
 - [docs/MATTERMOST-GAPS.md](docs/MATTERMOST-GAPS.md) — remaining Mattermost gaps
-- [docs/IMPL-SLICES.md](docs/IMPL-SLICES.md) — current implementation slice entry
-- [docs/IMPL-SLICES.phase3-future-features.md](docs/IMPL-SLICES.phase3-future-features.md) — phase3 planning
-
-### Historical docs
-
-- [docs/archive/](docs/archive/) — archived phase documents and historical materials
 
 ## Project status
 

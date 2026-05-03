@@ -60,6 +60,39 @@ mx-coder attach bug-fix
 mx-coder attach bug-fix
 ```
 
+## 命令参考
+
+| 命令 | 说明 |
+|------|------|
+| `mx-coder start` | 以后台守护进程方式启动 |
+| `mx-coder start-fg` | 以前台方式启动（打印日志） |
+| `mx-coder stop` | 停止运行中的守护进程 |
+| `mx-coder restart` | 重启守护进程 |
+| `mx-coder create <name> [-w <path>] [-C <cli>]` | 创建新 session |
+| `mx-coder attach <name>` | 接入已有 session，进入 Claude Code 终端交互 |
+| `mx-coder open <name>` | 在 IM 中打开 session（one-shot space 覆盖） |
+| `mx-coder env list <session>` | 列出 session 的所有环境变量（值脱敏） |
+| `mx-coder env get <session> <KEY>` | 获取指定环境变量值 |
+| `mx-coder env set <session> <KEY> <VALUE>` | 设置环境变量 |
+| `mx-coder env unset <session> <KEY>` | 删除环境变量 |
+| `mx-coder env clear <session>` | 清空 session 所有环境变量 |
+| `mx-coder env import <session> <env-file>` | 从 .env 文件批量导入环境变量 |
+| `mx-coder diagnose <name>` | 打印 session 本地诊断信息 |
+| `mx-coder takeover-status <name>` | 查看 takeover 请求状态 |
+| `mx-coder takeover-cancel <name>` | 取消待处理的 takeover 请求 |
+| `mx-coder list` | 列出所有 session |
+| `mx-coder status [name]` | 查看 daemon 或指定 session 状态 |
+| `mx-coder remove <name>` | 删除一个 session |
+| `mx-coder import <sessionId> -w <path>` | 从外部文件导入 session |
+| `mx-coder completion bash\|zsh\|sessions` | 输出 shell completion 脚本或 session 列表 |
+| `mx-coder im init [-p <plugin>] [-c <path>]` | 生成 IM 插件配置模板 |
+| `mx-coder im verify [-p <plugin>] [-c <path>]` | 验证 IM 连接是否正常 |
+| `mx-coder im run <sessionName>` | 为指定 session 运行 IM worker |
+| `mx-coder tui` | 打开交互式 TUI 监控面板 |
+| `mx-coder setup systemd [--user] [--dry-run]` | 预览/安装/管理 systemd user service |
+| `mx-coder --help, -h` | 显示帮助信息 |
+| `mx-coder --version, -v` | 显示版本信息 |
+
 ## Shell Completion
 
 mx-coder 支持：
@@ -154,13 +187,6 @@ source ~/.zshrc
 - [docs/EVENT-SEMANTICS.md](docs/EVENT-SEMANTICS.md) — 事件语义护栏
 - [docs/TODO.md](docs/TODO.md) — 当前未完成事项
 - [docs/MATTERMOST-GAPS.md](docs/MATTERMOST-GAPS.md) — Mattermost 方向剩余差距
-- [docs/IMPL-SLICES.md](docs/IMPL-SLICES.md) — 当前实现切片入口
-- [docs/IMPL-SLICES.p1-p3-stabilization.md](docs/IMPL-SLICES.p1-p3-stabilization.md) — 当前未完成主线任务的 TDD 切片
-- [docs/IMPL-SLICES.v2.1.md](docs/IMPL-SLICES.v2.1.md) — v2.1 新需求的 TDD 切片
-
-### 历史与归档
-
-- [docs/archive/](docs/archive/) — 历史阶段文档与归档材料
 
 ## 项目状态
 

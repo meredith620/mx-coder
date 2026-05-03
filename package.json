@@ -1,6 +1,6 @@
 {
   "name": "mx-coder",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "AI CLI session bridge — manage multiple AI CLI sessions with terminal and IM access",
   "type": "module",
   "main": "dist/index.js",

@@ -1438,7 +1438,7 @@ export class Daemon {
         e.code = 'SESSION_NOT_FOUND';
         throw e;
       }
-      const masked = Object.fromEntries(Object.entries(session.sessionEnv).map(([k, v]) => [k, v.length <= 4 ? '*'.repeat(v.length) : `${v.slice(0, 2)}***${v.slice(-2)}`]));
+      const masked = Object.fromEntries(Object.entries(session.sessionEnv).map(([k, v]) => [k, maskEnvValue(k, v)]));
       return { name, env: masked };
     });
 
@@ -1525,7 +1525,7 @@ export class Daemon {
       }
       const entries = Object.entries(session.sessionEnv).map(([key, value]) => ({
         key,
-        maskedValue: maskEnvValue(value),
+        maskedValue: maskEnvValue(key, value),
       }));
       return { name, entries };
     });

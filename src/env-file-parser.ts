@@ -38,13 +38,20 @@ export interface EnvParseResult {
 }
 
 /**
- * Mask an env value for display: hide all but the last 4 characters.
- * - length <= 4: return '****'
- * - length > 4: return '****' + last 4 chars
+ * Mask a secret env value for display: preserve first and last 5 characters.
+ * Only keys containing SECRET patterns (KEY, TOKEN, PASSWORD, SECRET, API,
+ * AUTH, CREDENTIAL, PRIVATE, ACCESS, etc.) are masked.
+ * - non-secret key: return value as-is
+ * - secret key, length <= 10: return '**********'
+ * - secret key, length > 10: return first5 + '*****' + last5
  */
-export function maskEnvValue(value: string): string {
-  if (value.length <= 4) return '****';
-  return '****' + value.slice(-4);
+export function maskEnvValue(key: string, value: string): string {
+  const secretPatterns = ['KEY', 'TOKEN', 'PASSWORD', 'SECRET', 'API', 'AUTH',
+    'CREDENTIAL', 'PRIVATE', 'ACCESS', 'CERT', 'PWD', 'PASS', 'SIGNATURE'];
+  const isSecret = secretPatterns.some(p => key.toUpperCase().includes(p));
+  if (!isSecret) return value;
+  if (value.length <= 10) return '**********';
+  return value.slice(0, 5) + '*****' + value.slice(-5);
 }
 
 export function parseEnvFile(content: string): EnvParseResult {

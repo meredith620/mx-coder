@@ -1307,20 +1307,90 @@ ui:
 
 `mx-coder tui` 连接 daemon 的 IPC（Unix socket），通过 `subscribe` 长连接接收 server-push event，持续运行并实时重绘状态面板。支持 SIGINT/SIGTERM 优雅退出。
 
-**功能：**
+#### 当前已落地能力（monitor baseline）
+
 - 查看所有 session 的状态（cold / ready / running / waiting_approval / attached_terminal / queue length / 最近活动时间）
 - 查看哪些 session 正在等待权限审批
 - 实时监控多会话运行情况（基于 daemon 推送的 `session_state_changed` 事件自动刷新）
 
-**适用场景：**
-- 在电脑前同时推进多个 session，需要总览面板
-- 希望在单独终端 tab 中监控 daemon 状态
-- 需要快速发现哪个 session 被 IM 接管、哪个在排队
+#### 产品定位（后续演进真值）
 
-**边界：**
-- TUI 不是 Claude Code 的交互界面
-- 真正进入某个 session 工作时，仍然执行 `mx-coder attach <name>`，直接进入原生 AI CLI
-- TUI 本质上是 daemon 的监控/控制台，而不是 REPL 宿主
+TUI 的目标定位不是“只读状态看板”，而是 **session workbench（会话工作台）**：
+
+- 以 **session** 为一级对象，而不是以 daemon 指标为中心
+- 在单个全屏界面内完成 **选中 session → 查看输出流 → 发送消息 / 命令 → 处理审批 / 控制权切换** 的主路径
+- 保留当前 monitor 能力，但降级为 workbench 中的一个视图，而不是 TUI 的最终形态
+
+#### TUI 必须承载的能力边界
+
+后续版本中的 TUI 至少应覆盖以下工作台能力：
+
+1. **Session 列表与焦点切换**
+   - 展示多 session 总览
+   - 支持快速切换当前焦点 session
+   - 清晰标识 busy / idle、runtimeState、queue length、binding kind、error / approval / attached 等关键信号
+2. **当前 session 的消息流视图**
+   - 展示用户输入、Claude/底层 coder 输出、系统事件、审批事件与恢复事件
+   - 支持流式增量刷新、滚动查看与 turn 边界区分
+3. **底部输入框**
+   - 支持直接向当前 session 发送普通消息
+   - 支持 `//<cmd>` 原生命令透传
+   - 支持 `/...` 形式的 TUI 内部控制命令
+4. **审批工作流**
+   - 在 `waiting_approval` 时显著展示待审批请求
+   - 支持在 TUI 内直接 approve / deny，并能查看请求摘要与风险语义
+5. **控制面快捷操作**
+   - 至少支持 attach、open、takeover status、takeover cancel、diagnose 等会话级动作
+6. **实时状态订阅**
+   - 继续以 daemon subscribe 推送为单一真值来源，驱动列表、消息流、审批态与控制态刷新
+
+#### 非目标与硬边界
+
+TUI 即使演进为 workbench，也不承担以下职责：
+
+- **不内嵌原生 attach 交互会话**：真正进入 Claude Code 工作时，仍执行 `mx-coder attach <name>`，保持终端原生体验
+- **不把自己做成编辑器 / IDE**：首期不引入文件树、代码编辑器、伪终端代理等与会话编排无关的重量功能
+- **不替代 daemon/CLI 插件职责**：TUI 是控制与观察界面，不拥有独立的会话真值或额外状态机
+
+#### 推荐布局约束
+
+默认布局应优先采用“**session 列表 + 当前会话主视图 + 底部输入栏**”的工作台结构，而不是继续扩展单页表格式看板。原因是：
+
+- 左侧负责上下文切换
+- 右侧负责会话工作过程
+- 底部负责动作输入
+
+这比继续堆叠状态字段更符合多 session agent 工作流。
+
+#### 分期规划（产品视角）
+
+- **TUI-M1：Monitor 基线（已完成）**
+  - subscribe 长连接
+  - session 总览
+  - approval / attached / recovering 等标识
+- **TUI-M2：Workbench MVP**
+  - session 列表
+  - active session 流式消息区
+  - prompt 输入框
+  - 审批卡片与 approve / deny
+  - attach / open / takeover 等快捷控制动作
+- **TUI-M3：可用性增强**
+  - 搜索 / 过滤
+  - 快捷键帮助面板
+  - unread / error / busy 标记
+  - status line
+  - stream visibility 切换
+- **TUI-M4：高级体验**
+  - peek / preview
+  - pinned sessions
+  - command palette
+  - env/detail panel 等辅助视图
+
+#### 适用场景
+
+- 在电脑前同时推进多个 session，需要总览 + 焦点工作台
+- 希望在单独终端 tab 中持续观察 daemon 与 session 状态
+- 需要在同一界面内快速完成监控、审批和控制权切换
 
 ### Session 生命周期与清理
 

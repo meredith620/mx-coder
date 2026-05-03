@@ -1,6 +1,7 @@
 dist
 node_modules
 .claude/
+src/generated
 *.pid
 *.sock
 *.tmp
