@@ -71,14 +71,17 @@ attach 不应依赖 Claude Code 的 `--session-id` 语义。
 
 ### 3.2 IM worker
 
-IM worker 负责把一条 IM 消息变成一个 Codex turn。
+IM worker 负责把一条 IM 消息变成一个 Codex turn，并且必须是**常驻进程**。
 
 规则：
 
 - worker 接收 mx-coder 标准 worker input JSONL。
 - worker 提取用户输入文本，作为 Codex turn prompt。
-- worker 调用 Codex CLI 的 `codex exec --json`，获取 JSONL 事件流。
-- `codex exec` 的真实参数包括 `--skip-git-repo-check`、`--ephemeral`、`--ignore-user-config`、`--ignore-rules`、`--output-schema`、`--output-last-message`、`--cd`、`--add-dir`、`--model`、`--sandbox`、`--ask-for-approval`、`--image`、`--config`、`--enable`、`--disable`。
+- worker 进程本身不应在每条 IM 消息后退出。
+- 首选 resident 入口是 `codex app-server --listen unix://<socket-path>`，因为它提供线程和 turn 级 RPC。
+- `codex app-server` 的真实参数包括 `--listen stdio://|unix://|ws://|off`、`--analytics-default-enabled`、`--ws-auth`、`--ws-token-file`、`--ws-token-sha256`、`--ws-shared-secret-file`、`--ws-issuer`、`--ws-audience`、`--ws-max-clock-skew-seconds`，并有 `proxy` / `generate-ts` / `generate-json-schema` 子命令。
+- mx-coder 通过 app-server 协议对 resident Codex 进程发送 `thread/start`、`thread/resume`、`turn/start`、`turn/interrupt` 等 RPC，而不是为每个 IM 命令单独起一个 `codex exec` 进程。
+- `codex exec` 只作为一次性 fallback 或诊断工具，不作为 IM worker 的主路径。
 - worker 将 Codex 事件归一化为 mx-coder 内部 CLIEvent。
 - worker 将事件持续推送给 IM 渲染层。
 
@@ -100,6 +103,17 @@ Codex 事件需要映射为 mx-coder 内部事件语义。
 - 流式输出可视化正常
 - turn 边界稳定
 - cursor 回放不乱
+
+### 3.4 Resident 生命周期
+
+IM 侧 Codex 适配必须满足以下生命周期要求：
+
+- 一个 session 对应一个 resident Codex 控制面进程。
+- 当 TUI 退出后，mx-coder 接管这个 resident 进程，继续通过 IM 与同一个 Codex thread 交互。
+- IM 消息到来时不应重新 spawn 一个新的 Codex 进程。
+- 一旦 app-server 连接断开或 Codex 进程退出，mx-coder 需要把该 session 标记为 worker 失活并由 daemon 负责重建，而不是把每条消息都退化成一次性 `codex exec`。
+- 如果 session 仍未绑定 thread id，则首次 `thread/started` 事件用于回填 mx-coder session id。
+- 如果 session 已绑定 thread id，则后续消息直接在同一个 thread 上调用 `turn/start`。
 
 ---
 

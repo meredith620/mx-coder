@@ -9,9 +9,10 @@
 
 在开始实现前先确认：
 
-1. Codex CLI 的真实启动参数和 JSONL 事件模型。
+1. Codex CLI 的真实启动参数和 app-server / exec 的边界。
 2. thread id 的来源是否稳定来自 `thread.started`。
 3. 审批链路不能依赖不存在的 CLI flag；如果要做 IM 实时审批，只能通过 mx-coder 的 worker / bridge 承担。
+4. IM worker 必须是 resident 进程，不允许每条消息都 spawn 一个新的 `codex exec`。
 
 若某项和设计不一致，先更新设计文档，再写实现。
 
@@ -21,7 +22,7 @@
 
 ### 目标
 
-把 Codex 插件作为可注册的 CLI plugin 接入，但不碰复杂事件流。
+把 Codex 插件作为可注册的 CLI plugin 接入，并明确 resident app-server 启动方式，但不碰复杂事件流。
 
 ### 测试优先清单
 
@@ -41,6 +42,7 @@
 - 增加 Codex home / sessions 扫描逻辑
 - 增加 session 诊断输出
 - attach/resume 真实命令应以 `codex resume` / `codex` 交互入口为准，而不是 Claude Code 的 `--session-id`
+- resident worker 主路径应使用 `codex app-server --listen unix://...`
 
 ### 通过标准
 
@@ -65,15 +67,18 @@
 
 3. `tests/integration/daemon-import.test.ts`
    - 导入已有 Codex thread id 后，attach/resume 直接复用该 id
+   - resident app-server 不会在每条消息后退出
 
 ### 实现内容
 
 - `handleAttach()` 保持 session 主键不变，attach 后触发 Codex id 回填
 - `SessionRegistry.updateSessionId()` 对 Codex 绑定场景保持幂等
+- worker 进程生命周期从“单条消息”提升为“session 级 resident 连接”
 
 ### 通过标准
 
 - 新建 session、首次 attach、import 既有 thread id 三条路径都可用。
+- 同一 session 的多条 IM 消息复用同一个 Codex resident process。
 
 ---
 
@@ -102,13 +107,15 @@
 ### 实现内容
 
 - worker adapter 负责从 stdin 读 mx-coder worker 输入
-- adapter 负责启动 `codex exec --json`
-- adapter 负责 stdout JSONL 到 CLIEvent 的映射
+- adapter 负责启动或连接 `codex app-server --listen unix://...`
+- adapter 负责对 resident app-server 发起 `thread/start` / `turn/start` / `turn/interrupt`
+- adapter 负责事件流归一化与 cursor 管理
 
 ### 通过标准
 
 - 一条 IM 消息能够完整跑通 Codex turn。
 - assistant 流和 result 边界稳定。
+- 连续两条 IM 消息复用同一个 resident Codex 进程，不重新 spawn。
 
 ---
 
@@ -137,7 +144,7 @@
 - 审批仍由 `ApprovalManager` / `ApprovalHandler` 统一控制
 - Codex worker 只消费 allow / deny 结果
 - 审批消息带上最小上下文：toolName、toolInputSummary、riskLevel、scopeOptions
-- worker 实现不应依赖不存在的 `--permission-prompt-tool`；若需要 Codex 侧支持审批等待，先验证是否能通过 `--ask-for-approval` 与 bridge 组合实现，再决定最终方案
+- worker 实现不应依赖不存在的 `--permission-prompt-tool`；审批等待应由 resident bridge 保持连接并把决策回传给同一 Codex 控制面
 
 ### 通过标准
 
@@ -149,7 +156,7 @@
 
 ### 目标
 
-让 Codex session 在 attach 与 IM worker 之间稳定切换。
+让 Codex session 在 attach 与 IM worker 之间稳定切换，同时保持 resident Codex 进程常驻。
 
 ### 测试优先清单
 
@@ -159,6 +166,7 @@
 
 2. `tests/integration/im-routing.test.ts`
    - IM 消息在 Codex session 上正确路由
+   - worker 断连后能由 daemon 触发重建，但不是每条消息重启
 
 3. `tests/e2e/reattach-after-exit.test.ts`
    - 退出 attach 后可再次 attach，并继续使用同一 Codex thread
@@ -167,10 +175,12 @@
 
 - 保持 `attach` 是控制权切换，不是 session 重建
 - 处理 `thread.started` 回填对恢复逻辑的影响
+- resident Codex 进程在 TUI 退出后仍保持存活，直到 session 显式结束或 daemon 重建
 
 ### 通过标准
 
 - 终端和 IM 不会同时驱动同一 Codex thread。
+- IM 与 Codex 之间是长连接，不是 per-message exec。
 
 ---
 
