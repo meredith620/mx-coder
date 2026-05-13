@@ -79,11 +79,12 @@ mx-coder attach bug-fix
 | `mx-coder completion bash\|zsh\|sessions` | Print shell completion script or session list |
 | `mx-coder im init [-p <plugin>] [-c <path>]` | Generate IM plugin config template |
 | `mx-coder im verify [-p <plugin>] [-c <path>]` | Verify IM connectivity |
-| `mx-coder im run <sessionName>` | Run IM worker for a session |
 | `mx-coder tui` | Open interactive TUI dashboard |
 | `mx-coder setup systemd [--user] [--dry-run]` | Preview/install/manage systemd user service |
 | `mx-coder --help, -h` | Show this help |
 | `mx-coder --version, -v` | Show version info |
+
+IM workers are launched lazily by the daemon based on each session's `cliPlugin`, so `mx-coder im run` is not part of the normal user workflow.
 
 ## Shell completion
 

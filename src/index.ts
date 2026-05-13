@@ -195,6 +195,7 @@ COMMANDS:
   create <name> [-n|--name <name>] [-w|--workdir <path>] [-C|--cli <name>]
                                   [--space-strategy <thread|channel>]
                                   Create a new session
+                                  Valid CLI plugins: claude-code (default), codex-cli
   attach <name> [-n|--name <name>]  Attach to a session
   open <name> [-n|--name <name>] [--space-strategy <thread|channel>]
                                   Open a session in IM with one-shot space override
@@ -215,7 +216,6 @@ COMMANDS:
                                   Create IM config template
   im verify [-p|--plugin <name>] [-c|--config <path>]
                                   Verify IM connectivity
-  im run <sessionName>            Run IM worker for a session
   tui                             Open interactive TUI dashboard
   --help, -h                      Show this help
   --version, -v                   Show version info
@@ -226,6 +226,7 @@ EXAMPLES:
   mx-coder stop
   mx-coder restart
   mx-coder create bug-fix -w ~/myapp
+  mx-coder create codex-demo -w ~/myapp -C codex-cli
   mx-coder attach bug-fix
   mx-coder open bug-fix
   mx-coder diagnose bug-fix
@@ -524,6 +525,8 @@ async function handleCreate(args: Record<string, string | undefined>) {
   if (spaceStrategy !== undefined && spaceStrategy !== 'thread' && spaceStrategy !== 'channel') {
     throw new Error("space-strategy must be 'thread' or 'channel'");
   }
+  // Validate early so typos fail before we talk to the daemon.
+  getCLIPlugin(cli);
 
   const client = new IPCClient(SOCKET_PATH);
   await client.connect();
@@ -1044,7 +1047,7 @@ async function handleIm(subcommand: string, args: Record<string, string | undefi
       await handleImVerify(args);
       break;
     case 'run':
-      console.error('im run: not yet implemented');
+      console.error('im run is a legacy compatibility alias; IM workers are launched automatically by the daemon');
       process.exit(1);
       break;
     default:

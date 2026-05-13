@@ -319,6 +319,7 @@ class IMWorkerManager {
 - 处理懒启动 / pre-warm / attach 前停 worker / 崩溃重启
 - 对外暴露“确保 worker 可复用”和“向当前 worker 写入一条消息”两个能力，而不是“每条消息新起一个 Claude 进程”
 - 仅在消息级成功（`result` 成功且回传 IM 完成）时调用 `resetCrashCountOnSuccess` 清零连续崩溃计数
+- `im run` / `im-run` 仅作为历史兼容解析名保留，不作为当前公共工作流的一部分；daemon 直接通过 `buildIMWorkerCommand()` 惰性启动 worker
 
 ### 3.4 ApprovalManager（daemon MCP server）
 

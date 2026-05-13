@@ -160,6 +160,7 @@ describe('mx-coder CLI E2E', () => {
     const { stdout, code } = await runCLIWithSocket([], socketPath, pidFile);
     expect(code).toBe(0);
     expect(stdout).toContain('mx-coder');
+    expect(stdout).not.toContain('im run <sessionName>');
   });
 
   test('create 支持单次 spaceStrategy override 且不报错', async () => {

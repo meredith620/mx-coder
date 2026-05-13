@@ -187,6 +187,7 @@ npm unlink
 5. 如需作为默认插件，修改 registry 中的默认插件常量
 
 当前默认 CLI 插件名：`claude-code`
+`im run` 仅保留为历史兼容解析名，不是当前公共工作流的一部分；实际 IM worker 由 daemon 根据 `buildIMWorkerCommand()` 惰性拉起。
 
 ### IM 插件
 

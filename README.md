@@ -91,11 +91,12 @@ mx-coder attach bug-fix
 | `mx-coder completion bash\|zsh\|sessions` | 输出 shell completion 脚本或 session 列表 |
 | `mx-coder im init [-p <plugin>] [-c <path>]` | 生成 IM 插件配置模板 |
 | `mx-coder im verify [-p <plugin>] [-c <path>]` | 验证 IM 连接是否正常 |
-| `mx-coder im run <sessionName>` | 为指定 session 运行 IM worker |
 | `mx-coder tui` | 打开交互式 TUI 监控面板 |
 | `mx-coder setup systemd [--user] [--dry-run]` | 预览/安装/管理 systemd user service |
 | `mx-coder --help, -h` | 显示帮助信息 |
 | `mx-coder --version, -v` | 显示版本信息 |
+
+IM worker 由 daemon 内部按 session 的 `cliPlugin` 惰性拉起，通常不需要手动执行 `mx-coder im run`。
 
 ## Shell Completion
 
